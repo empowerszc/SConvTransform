@@ -115,8 +115,16 @@ module attributes {transform.with_named_sequence} {
 }
 ```
 
+Testing
+--------------------------------------------------------------------------------
+
+SConvTransform uses a test suite called ConvBench that runs several convolution
+operators extracted from real models available publicly. To evaluate
+SConvTransform, please follow the instructions at [this page](scripts/convbench/README.md).
+
 References
 --------------------------------------------------------------------------------
+
 
 You can learn more about the algorithm and implementation details by reading the
 following papers:
