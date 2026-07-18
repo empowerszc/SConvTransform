@@ -78,7 +78,7 @@ def get_libs(rtclock_lib, blas_lib):
     ])
 
 def sh(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
 def lower_run(mlir, libs):
     tmp = mlir.replace(".mlir", ".llvm.mlir")
@@ -114,9 +114,10 @@ def get_data(out):
     try: return np.array(ast.literal_eval(data_str))
     except: return None
 
-def gen_payloads(csv, template, out_dir, num=None):
+def gen_payloads(csv, template, out_dir, num=None, runs=1):
     cmd = [sys.executable, GEN_PAYLOAD, template, csv, out_dir]
     if num: cmd += ["--num", str(num)]
+    cmd += ["--runs", str(runs)]
     subprocess.run(cmd, capture_output=True, text=True)
 
 def correctness_test(payload_dir, n, libs):
@@ -187,6 +188,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default=SAMPLE_CSV, help="CSV dataset file")
     ap.add_argument("--num", type=int, default=5, help="Number of convolutions")
+    ap.add_argument("--runs", type=int, default=1, help="Number of timing iterations (performance)")
     ap.add_argument("--correctness-only", action="store_true")
     args = ap.parse_args()
 
@@ -200,8 +202,8 @@ if __name__ == "__main__":
     tmp = "/tmp/sconvtest_convbench"
     corr_dir = os.path.join(tmp, "correctness")
     perf_dir = os.path.join(tmp, "performance")
-    gen_payloads(args.csv, CORRECTNESS_TPL, corr_dir, args.num)
-    gen_payloads(args.csv, PERFORMANCE_TPL, perf_dir, args.num)
+    gen_payloads(args.csv, CORRECTNESS_TPL, corr_dir, args.num, args.runs)
+    gen_payloads(args.csv, PERFORMANCE_TPL, perf_dir, args.num, args.runs)
 
     p, f = correctness_test(corr_dir, args.num, libs)
     if not args.correctness_only:

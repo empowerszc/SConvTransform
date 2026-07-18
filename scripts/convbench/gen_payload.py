@@ -10,6 +10,9 @@ def main():
     max_rows = None
     if "--num" in sys.argv:
         max_rows = int(sys.argv[sys.argv.index("--num") + 1])
+    runs = 30
+    if "--runs" in sys.argv:
+        runs = int(sys.argv[sys.argv.index("--runs") + 1])
     os.makedirs(out_dir, exist_ok=True)
     with open(template_path) as f:
         template = f.read()
@@ -26,7 +29,7 @@ def main():
             rep["{{PHI}}"] = str(phi)
             rep["{{PWI}}"] = str(pwi)
             rep["{{FLOPS}}"] = str(flops)
-            rep["{{RUNS}}"] = "30"
+            rep["{{RUNS}}"] = str(runs)
             mlir = template
             for k, v in rep.items():
                 mlir = mlir.replace(k, v)
