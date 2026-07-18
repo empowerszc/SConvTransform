@@ -127,10 +127,10 @@ def get_data(out):
     try: return np.array(ast.literal_eval(data_str))
     except: return None
 
-def gen_payloads(csv, template, out_dir, num=None, runs=1):
+def gen_payloads(csv, template, out_dir, num=None, runs=5, warmup=3):
     cmd = [sys.executable, GEN_PAYLOAD, template, csv, out_dir]
     if num: cmd += ["--num", str(num)]
-    cmd += ["--runs", str(runs)]
+    cmd += ["--runs", str(runs), "--warmup", str(warmup)]
     subprocess.run(cmd, capture_output=True, text=True)
 
 def correctness_test(payload_dir, n, libs):
@@ -163,9 +163,10 @@ def correctness_test(payload_dir, n, libs):
     print(f"\n  Result: {passed} passed, {failed} failed")
     return passed, failed
 
-def perf_test(payload_dir, n, libs, runs=1):
+def perf_test(payload_dir, n, libs, runs=5, warmup=3):
     print(f"\n{'='*85}")
-    print(f"  Performance Test: {n} convolutions (runs={runs})")
+    print(f"  Performance Test: {n} convolutions (warmup={warmup}, runs={runs})")
+    print(f"  Time = average per-iteration ms (total_time / runs)")
     print(f"{'='*85}")
     hdr = f"  {'Conv':<18} {'Base(ms)':>9} {'SConv(ms)':>9} {'Base GFLOPS':>11} {'SConv GFLOPS':>12} {'Speedup':>7}"
     sep = f"  {'-'*18} {'-'*9} {'-'*9} {'-'*11} {'-'*12} {'-'*7}"
@@ -177,7 +178,7 @@ def perf_test(payload_dir, n, libs, runs=1):
         b_out, err, _ = lower_run(mlir, libs)
         if err: continue
         b_gflops = get_flops(b_out)
-        b_ms = get_time_ms(b_out)
+        b_total_ms = get_time_ms(b_out)
         tf_tmp = mlir.replace(".mlir", ".tf.mlir")
         r = sh([SCONV, "-transform=" + TF_BLAS, mlir])
         if r.returncode: continue
@@ -186,9 +187,11 @@ def perf_test(payload_dir, n, libs, runs=1):
         if os.path.exists(tf_tmp): os.unlink(tf_tmp)
         if err: continue
         t_gflops = get_flops(t_out)
-        t_ms = get_time_ms(t_out)
+        t_total_ms = get_time_ms(t_out)
         name = f.replace(".mlir", "")
-        if b_ms is not None and t_ms is not None and b_gflops and t_gflops:
+        if b_total_ms is not None and t_total_ms is not None and b_gflops and t_gflops:
+            b_ms = b_total_ms / runs  # per-iteration
+            t_ms = t_total_ms / runs
             su = t_gflops / b_gflops
             print(f"  {name:<18} {b_ms:>9.3f} {t_ms:>9.3f} {b_gflops:>9.2f} {t_gflops:>12.2f} {su:>6.2f}x")
             results.append((name, b_ms, t_ms, b_gflops, t_gflops, su))
@@ -198,7 +201,7 @@ def perf_test(payload_dir, n, libs, runs=1):
         avg_su = sum(r[5] for r in results) / len(results)
         tot_b = sum(r[1] for r in results)
         tot_t = sum(r[2] for r in results)
-        print(f"\n  Total compute time:  baseline {tot_b:.1f}ms  |  SConv+BLAS {tot_t:.1f}ms")
+        print(f"\n  Total per-iter time:  baseline {tot_b:.1f}ms  |  SConv+BLAS {tot_t:.1f}ms")
         print(f"  Average speedup: {avg_su:.2f}x ({len(results)} convs)")
     return results
 
@@ -207,7 +210,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default=SAMPLE_CSV, help="CSV dataset file")
     ap.add_argument("--num", type=int, default=5, help="Number of convolutions")
-    ap.add_argument("--runs", type=int, default=1, help="Number of timing iterations (performance)")
+    ap.add_argument("--runs", type=int, default=5, help="Timed iterations (after warmup)")
+    ap.add_argument("--warmup", type=int, default=3, help="Warmup iterations (untimed)")
     ap.add_argument("--correctness-only", action="store_true")
     args = ap.parse_args()
 
@@ -221,12 +225,12 @@ if __name__ == "__main__":
     tmp = "/tmp/sconvtest_convbench"
     corr_dir = os.path.join(tmp, "correctness")
     perf_dir = os.path.join(tmp, "performance")
-    gen_payloads(args.csv, CORRECTNESS_TPL, corr_dir, args.num, args.runs)
-    gen_payloads(args.csv, PERFORMANCE_TPL, perf_dir, args.num, args.runs)
+    gen_payloads(args.csv, CORRECTNESS_TPL, corr_dir, args.num, args.runs, args.warmup)
+    gen_payloads(args.csv, PERFORMANCE_TPL, perf_dir, args.num, args.runs, args.warmup)
 
     p, f = correctness_test(corr_dir, args.num, libs)
     if not args.correctness_only:
-        perf_test(perf_dir, args.num, libs, args.runs)
+        perf_test(perf_dir, args.num, libs, args.runs, args.warmup)
     print(f"\n{'='*60}")
     print(f"  Done. Correctness: {p} passed, {f} failed")
     print(f"{'='*60}")

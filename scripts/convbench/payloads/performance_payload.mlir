@@ -51,8 +51,19 @@ module {
     // Number of iterations
     %f0 = arith.constant 0. : f64
     %num_reps = arith.constant {{RUNS}} : index
+    %num_warmup = arith.constant {{WARMUP}} : index
 
-    // Run convolution and time it
+    // Warmup: run conv a few times without timing (cache, freq scaling)
+    %warmup_res = scf.for %arg_w = %c0 to %num_warmup step %c1
+      iter_args(%out_w = %out) -> (!output_tensor_t) {
+      %zero_w = arith.constant 0.0 : f32
+      %zeroed_w = linalg.fill ins(%zero_w : f32) outs(%out_w : !output_tensor_t) -> !output_tensor_t
+      %res_w = func.call @conv_2d_nchw_fchw(%inp, %wei, %zeroed_w)
+        : (!input_tensor_t, !weight_tensor_t, !output_tensor_t) -> !output_tensor_t
+      scf.yield %res_w : !output_tensor_t
+    }
+
+    // Timed run
     %t_start = func.call @rtclock() : () -> f64
     %final_res = scf.for %arg0 = %c0 to %num_reps step %c1
       iter_args(%out_loop = %out) -> (!output_tensor_t) {

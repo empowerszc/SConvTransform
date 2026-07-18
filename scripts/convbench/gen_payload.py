@@ -13,6 +13,9 @@ def main():
     runs = 30
     if "--runs" in sys.argv:
         runs = int(sys.argv[sys.argv.index("--runs") + 1])
+    warmup = 3
+    if "--warmup" in sys.argv:
+        warmup = int(sys.argv[sys.argv.index("--warmup") + 1])
     os.makedirs(out_dir, exist_ok=True)
     with open(template_path) as f:
         template = f.read()
@@ -30,6 +33,7 @@ def main():
             rep["{{PWI}}"] = str(pwi)
             rep["{{FLOPS}}"] = str(flops)
             rep["{{RUNS}}"] = str(runs)
+            rep["{{WARMUP}}"] = str(warmup)
             mlir = template
             for k, v in rep.items():
                 mlir = mlir.replace(k, v)
