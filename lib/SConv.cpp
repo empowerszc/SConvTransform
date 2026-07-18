@@ -833,8 +833,8 @@ applyFilterPacking(RewriterBase &rewriter, Operation *transformOp, CSAStrategy r
       nestedBuilder.create<linalg::YieldOp>(nestedLoc, filterVal);
     });
 
-  packingTensor->setAttrs({{"packing", rewriter.getStringAttr("filter")},
-                           {"multipacking", rewriter.getBoolAttr(false)}});
+  packingTensor->setAttrs(rewriter.getNamedAttr("packing", rewriter.getStringAttr("filter")));
+  packingTensor->setAttr("multipacking", rewriter.getBoolAttr(false));
 
   // Collapsing [Ic, Fh, Fw, Nf] → [Ic*Fh*Fw, Nf] matches the “register-friendly”
   // 2D panel expected by the outer-product microkernel (Fig. 2 of the paper).
@@ -977,8 +977,8 @@ applyInputPacking(RewriterBase &rewriter, Operation *transformOp, ConvInfo csaCo
       nestedBuilder.create<linalg::YieldOp>(nestedLoc, inputVal);
     });
 
-  packingTensor->setAttrs({{"packing", rewriter.getStringAttr("input")},
-                           {"multipacking", rewriter.getBoolAttr(false)}});
+  packingTensor->setAttrs(rewriter.getNamedAttr("packing", rewriter.getStringAttr("input")));
+  packingTensor->setAttr("multipacking", rewriter.getBoolAttr(false));
 
   // Collapse [N, Ic, Fh, Fw, Nwin] → [N, Ic*Fh*Fw, Nwin] to form a 3D packed
   // tensor matching the microkernel’s expected input panel layout.
@@ -1061,6 +1061,19 @@ swapInductionVars(RewriterBase &rewriter, Operation *transformOp, CSAStrategy re
   Value innerLowerBound = innerLoop.getLowerBound();
   Value innerUpperBound = innerLoop.getUpperBound();
   Value innerStep = innerLoop.getStep();
+
+  // Hoist inner loop bound constants to before the outer loop to maintain
+  // SSA dominance after swapping (inner bounds are defined inside outer body).
+  auto hoistIfLocal = [&](Value &v) {
+    if (auto *defOp = v.getDefiningOp()) {
+      if (defOp->getBlock() == innerLoop.getBody() ||
+          defOp->getBlock() == outerLoop.getBody())
+        defOp->moveBefore(outerLoop);
+    }
+  };
+  hoistIfLocal(innerLowerBound);
+  hoistIfLocal(innerUpperBound);
+  hoistIfLocal(innerStep);
 
   outerLoop.setLowerBound(innerLowerBound);
   outerLoop.setUpperBound(innerUpperBound);
@@ -1186,8 +1199,8 @@ inputMultipackingOpt(RewriterBase &rewriter, Operation *transformOp, ConvInfo cs
     nestedBuilder.create<linalg::YieldOp>(nestedLoc, inputVal);
   });
 
-  newPackingTensor->setAttrs({{"packing", rewriter.getStringAttr("input")},
-                              {"multipacking", rewriter.getBoolAttr(true)}});
+  newPackingTensor->setAttrs(rewriter.getNamedAttr("packing", rewriter.getStringAttr("input")));
+  newPackingTensor->setAttr("multipacking", rewriter.getBoolAttr(true));
 
   // Create the affine.apply at beginning of innerLoop body
   // to indexing the new inputSlice
@@ -1436,8 +1449,8 @@ filterMultipackingOpt(RewriterBase &rewriter, Operation *transformOp,
     nestedBuilder.create<linalg::YieldOp>(nestedLoc, filterVal);
   });
 
-  newPackingTensor->setAttrs({{"packing", rewriter.getStringAttr("filter")},
-                              {"multipacking", rewriter.getBoolAttr(true)}});
+  newPackingTensor->setAttrs(rewriter.getNamedAttr("packing", rewriter.getStringAttr("filter")));
+  newPackingTensor->setAttr("multipacking", rewriter.getBoolAttr(true));
 
   // Create the affine.apply at beginning of innerLoop body to indexing the new filterSlice
   rewriter.setInsertionPointToStart(innerLoop.getBody());
@@ -1719,8 +1732,8 @@ applyTileTo(RewriterBase &rewriter, Operation *transformOp, Operation *target, C
   // Add attributes to the microkernel
   auto ukernel = tiledOps.front();
   auto schedule = (res.schd == Scheduling::IS) ? "IS" : "WS";
-  ukernel->setAttrs({{"microkernel", rewriter.getUnitAttr()},
-                     {"schedule", rewriter.getStringAttr(schedule)}});
+  ukernel->setAttr("microkernel", rewriter.getUnitAttr());
+  ukernel->setAttr("schedule", rewriter.getStringAttr(schedule));
 
   // Store the results (Operation*) in the output variable (as Value)
   outResults.push_back(ukernel);

@@ -173,7 +173,9 @@ static FailureOr<LLVMCallOp> createBlasCallOp(TransformRewriter &rewriter,
   if (!outTileTy)
     outTile.getDefiningOp()->emitError()
         << "expected operand 2 to have type memref";
-  auto [strides, _] = outTileTy.getStridesAndOffset();
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  std::tie(strides, std::ignore) = mlir::getStridesAndOffset(outTileTy);
 
   auto createI64 = [&](int64_t value) -> Value {
     return rewriter.create<arith::ConstantIntOp>(loc, value, 64);
