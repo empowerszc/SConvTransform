@@ -22,7 +22,8 @@ fi
 cmake -S . -B build -G Ninja    \
    -DCMAKE_C_COMPILER=clang     \
    -DCMAKE_CXX_COMPILER=clang++ \
-   -DCMAKE_BUILD_TYPE=Debug     \
-   -DLLVM_ENABLE_LLD=ON         \
+   -DCMAKE_BUILD_TYPE=Release  \
+   -DCMAKE_CXX_STANDARD=17     \
+   -DLLVM_ENABLE_ASSERTIONS=ON \
    -DLLVM_DIR="$LLVM_DIR"       \
    -DMLIR_DIR="$MLIR_DIR"
