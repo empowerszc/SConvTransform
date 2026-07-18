@@ -103,6 +103,19 @@ def get_flops(out):
                 except: pass
     return None
 
+def get_compute_flops(payload_file):
+    """Read the FLOPs constant from the generated payload MLIR file."""
+    with open(payload_file) as f:
+        for line in f:
+            if "num_flops_per_iter" in line and "arith.constant" in line:
+                # e.g: %num_flops_per_iter = arith.constant 2286144 : index
+                parts = line.split("arith.constant")
+                if len(parts) >= 2:
+                    val = parts[1].split(":")[0].strip()
+                    try: return int(val)
+                    except: pass
+    return None
+
 def get_data(out):
     lines = out.strip().split("\n")
     start = -1
@@ -155,39 +168,43 @@ def correctness_test(payload_dir, n, libs):
     return passed, failed
 
 def perf_test(payload_dir, n, libs, runs=1):
-    print(f"\n{'='*80}")
+    print(f"\n{'='*85}")
     print(f"  Performance Test: {n} convolutions (runs={runs})")
-    print(f"{'='*80}")
-    hdr = f"  {'Conv':<18} {'Base(s)':>8} {'SConv(s)':>8} {'Base GFLOPS':>12} {'SConv GFLOPS':>13} {'Speedup':>8}"
-    sep = f"  {'-'*18} {'-'*8} {'-'*8} {'-'*12} {'-'*13} {'-'*8}"
+    print(f"{'='*85}")
+    hdr = f"  {'Conv':<18} {'FLOPs':>10} {'Base(ms)':>9} {'SConv(ms)':>9} {'Base GFLOPS':>11} {'SConv GFLOPS':>12} {'Speedup':>7}"
+    sep = f"  {'-'*18} {'-'*10} {'-'*9} {'-'*9} {'-'*11} {'-'*12} {'-'*7}"
     print(hdr); print(sep)
     results = []
     for f in sorted(os.listdir(payload_dir))[:n]:
         if not f.endswith(".mlir"): continue
         mlir = os.path.join(payload_dir, f)
-        b_out, err, b_wall = lower_run(mlir, libs)
+        total_flops = get_compute_flops(mlir)
+        b_out, err, _ = lower_run(mlir, libs)
         if err: continue
-        b_flops = get_flops(b_out)
+        b_gflops = get_flops(b_out)
         tf_tmp = mlir.replace(".mlir", ".tf.mlir")
         r = sh([SCONV, "-transform=" + TF_BLAS, mlir])
         if r.returncode: continue
         with open(tf_tmp, "w") as of: of.write(r.stdout)
-        t_out, err, t_wall = lower_run(tf_tmp, libs)
+        t_out, err, _ = lower_run(tf_tmp, libs)
         if os.path.exists(tf_tmp): os.unlink(tf_tmp)
         if err: continue
-        t_flops = get_flops(t_out)
+        t_gflops = get_flops(t_out)
         name = f.replace(".mlir", "")
-        if b_flops and t_flops:
-            su = t_flops / b_flops
-            print(f"  {name:<18} {b_wall:>8.3f} {t_wall:>8.3f} {b_flops:>10.2f} {t_flops:>13.2f} {su:>7.2f}x")
-            results.append((name, b_wall, t_wall, b_flops, t_flops, su))
+        if b_gflops and t_gflops and total_flops:
+            su = t_gflops / b_gflops
+            b_ms = total_flops / (b_gflops * 1e6)  # ms = flops / (GFLOPS * 1e9) * 1000
+            t_ms = total_flops / (t_gflops * 1e6)
+            flops_str = f"{total_flops/1e6:.1f}M" if total_flops < 1e9 else f"{total_flops/1e9:.1f}G"
+            print(f"  {name:<18} {flops_str:>10} {b_ms:>9.3f} {t_ms:>9.3f} {b_gflops:>9.2f} {t_gflops:>12.2f} {su:>6.2f}x")
+            results.append((name, total_flops, b_ms, t_ms, b_gflops, t_gflops, su))
         else:
-            print(f"  {name:<18} {'FAIL':>8} {'FAIL':>8} {'FAIL':>12} {'FAIL':>13}")
+            print(f"  {name:<18} {'FAIL':>10}")
     if results:
-        avg_su = sum(r[5] for r in results) / len(results)
-        tot_b = sum(r[1] for r in results)
-        tot_t = sum(r[2] for r in results)
-        print(f"\n  Total time:  baseline {tot_b:.3f}s  |  SConv+BLAS {tot_t:.3f}s")
+        avg_su = sum(r[6] for r in results) / len(results)
+        tot_b_ms = sum(r[2] for r in results)
+        tot_t_ms = sum(r[3] for r in results)
+        print(f"\n  Total compute time:  baseline {tot_b_ms:.1f}ms  |  SConv+BLAS {tot_t_ms:.1f}ms")
         print(f"  Average speedup: {avg_su:.2f}x ({len(results)} convs)")
     return results
 
