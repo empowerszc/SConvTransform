@@ -81,14 +81,18 @@ def sh(cmd):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
 def lower_run(mlir, libs):
+    """Lower MLIR to LLVM and JIT-run. Returns (output, error, wall_seconds)."""
+    import time
     tmp = mlir.replace(".mlir", ".llvm.mlir")
     r = sh([MOPT, mlir] + LOPTS + ["-o", tmp])
-    if r.returncode: return None, r.stderr[:300]
+    if r.returncode: return None, r.stderr[:300], 0
+    t0 = time.time()
     r = sh([RUNNER, tmp, "-e", "main", "-entry-point-result=void",
             "-shared-libs=" + libs])
+    elapsed = time.time() - t0
     if os.path.exists(tmp): os.unlink(tmp)
-    if r.returncode: return None, r.stderr[:300]
-    return r.stdout + r.stderr, None
+    if r.returncode: return None, r.stderr[:300], elapsed
+    return r.stdout + r.stderr, None, elapsed
 
 def get_flops(out):
     for l in reversed(out.strip().split("\n")):
@@ -128,7 +132,7 @@ def correctness_test(payload_dir, n, libs):
     for f in sorted(os.listdir(payload_dir))[:n]:
         if not f.endswith(".mlir"): continue
         mlir = os.path.join(payload_dir, f)
-        base_out, err = lower_run(mlir, libs)
+        base_out, err, _ = lower_run(mlir, libs)
         if err:
             print(f"  SKIP {f}: baseline error"); failed += 1; continue
         tf_tmp = mlir.replace(".mlir", ".tf.mlir")
@@ -136,7 +140,7 @@ def correctness_test(payload_dir, n, libs):
         if r.returncode:
             print(f"  SKIP {f}: transform error"); failed += 1; continue
         with open(tf_tmp, "w") as of: of.write(r.stdout)
-        tf_out, err = lower_run(tf_tmp, libs)
+        tf_out, err, _ = lower_run(tf_tmp, libs)
         if os.path.exists(tf_tmp): os.unlink(tf_tmp)
         if err:
             print(f"  FAIL {f}: run error"); failed += 1; continue
@@ -150,37 +154,41 @@ def correctness_test(payload_dir, n, libs):
     print(f"\n  Result: {passed} passed, {failed} failed")
     return passed, failed
 
-def perf_test(payload_dir, n, libs):
-    print(f"\n{'='*60}")
-    print(f"  Performance Test: {n} convolutions")
-    print(f"{'='*60}")
-    print(f"  {'Conv':<20} {'Baseline':>12} {'SConv+BLAS':>12} {'Speedup':>8}")
-    print(f"  {'-'*20} {'-'*12} {'-'*12} {'-'*8}")
+def perf_test(payload_dir, n, libs, runs=1):
+    print(f"\n{'='*80}")
+    print(f"  Performance Test: {n} convolutions (runs={runs})")
+    print(f"{'='*80}")
+    hdr = f"  {'Conv':<18} {'Base(s)':>8} {'SConv(s)':>8} {'Base GFLOPS':>12} {'SConv GFLOPS':>13} {'Speedup':>8}"
+    sep = f"  {'-'*18} {'-'*8} {'-'*8} {'-'*12} {'-'*13} {'-'*8}"
+    print(hdr); print(sep)
     results = []
     for f in sorted(os.listdir(payload_dir))[:n]:
         if not f.endswith(".mlir"): continue
         mlir = os.path.join(payload_dir, f)
-        b_out, err = lower_run(mlir, libs)
+        b_out, err, b_wall = lower_run(mlir, libs)
         if err: continue
         b_flops = get_flops(b_out)
         tf_tmp = mlir.replace(".mlir", ".tf.mlir")
         r = sh([SCONV, "-transform=" + TF_BLAS, mlir])
         if r.returncode: continue
         with open(tf_tmp, "w") as of: of.write(r.stdout)
-        t_out, err = lower_run(tf_tmp, libs)
+        t_out, err, t_wall = lower_run(tf_tmp, libs)
         if os.path.exists(tf_tmp): os.unlink(tf_tmp)
         if err: continue
         t_flops = get_flops(t_out)
         name = f.replace(".mlir", "")
         if b_flops and t_flops:
             su = t_flops / b_flops
-            print(f"  {name:<20} {b_flops:>10.2f} {t_flops:>12.2f} {su:>7.2f}x")
-            results.append((name, b_flops, t_flops, su))
+            print(f"  {name:<18} {b_wall:>8.3f} {t_wall:>8.3f} {b_flops:>10.2f} {t_flops:>13.2f} {su:>7.2f}x")
+            results.append((name, b_wall, t_wall, b_flops, t_flops, su))
         else:
-            print(f"  {name:<20} {'FAIL':>12} {'FAIL':>12}")
+            print(f"  {name:<18} {'FAIL':>8} {'FAIL':>8} {'FAIL':>12} {'FAIL':>13}")
     if results:
-        avg = sum(r[3] for r in results) / len(results)
-        print(f"\n  Average speedup: {avg:.2f}x ({len(results)} convs)")
+        avg_su = sum(r[5] for r in results) / len(results)
+        tot_b = sum(r[1] for r in results)
+        tot_t = sum(r[2] for r in results)
+        print(f"\n  Total time:  baseline {tot_b:.3f}s  |  SConv+BLAS {tot_t:.3f}s")
+        print(f"  Average speedup: {avg_su:.2f}x ({len(results)} convs)")
     return results
 
 if __name__ == "__main__":
@@ -207,7 +215,7 @@ if __name__ == "__main__":
 
     p, f = correctness_test(corr_dir, args.num, libs)
     if not args.correctness_only:
-        perf_test(perf_dir, args.num, libs)
+        perf_test(perf_dir, args.num, libs, args.runs)
     print(f"\n{'='*60}")
     print(f"  Done. Correctness: {p} passed, {f} failed")
     print(f"{'='*60}")
