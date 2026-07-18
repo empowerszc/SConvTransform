@@ -66,6 +66,9 @@ module {
     %t_end = func.call @rtclock() : () -> f64
     %t = arith.subf %t_end, %t_start : f64
 
+    // Print elapsed time (ms) to stderr
+    func.call @printTime(%t) : (f64) -> ()
+
     // Print the result
     %un_res = tensor.cast %final_res : !output_tensor_t to tensor<*xf32>
     func.call @printMemrefF32(%un_res) : (tensor<*xf32>) -> ()
@@ -87,5 +90,6 @@ module {
 
   func.func private @printMemrefF32(tensor<*xf32>) attributes { llvm.emit_c_interface }
   func.func private @printFlops(f64)
+  func.func private @printTime(f64)
   func.func private @rtclock() -> f64
 }
