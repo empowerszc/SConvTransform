@@ -567,8 +567,28 @@ packed_input shape: [N, K2, Nc, Fh, Fw, Nwin]  → collapse → [N, K2, K, Nwin]
 
 #### 5a. 微内核的结构 (adjustLinalgOps)
 
-打包后, 微内核 (`linalg.generic`) 被 `adjustLinalgOps()` 重写为外积形式
-(代码 `SConv.cpp:669-673`):
+打包后, 微内核 (`linalg.generic`) 被 `adjustLinalgOps()` 重写为**外积形式的
+矩阵乘** (代码 `SConv.cpp:669-673`)。
+
+> **什么是"外积形式"?**
+>
+> 任何矩阵乘 `C = A × B` 都有两种等价的计算方式:
+>
+> **内积 (点积) 形式** — 逐元素算, 归约维在最内层:
+> ```
+> for i: for j: C[i,j] = Σ_k A[i,k] × B[k,j]   ← 每次更新 C 的 1 个元素
+> ```
+>
+> **外积形式** — 逐 k 累加秩-1 矩阵, 归约维概念上在最外层:
+> ```
+> for k: C[:, :] += A[:,k] × B[k,:]   ← 每次更新 C 的整个矩阵
+> ```
+> 每次迭代 `A[:,k] × B[k,:]` 是两个向量的**外积** (rank-1 更新)。
+>
+> SConv 用外积形式是因为 SME 的 `FMOPA` 指令计算的就是外积:
+> `ZA[16×16] += Z_a[16] × Z_b[16]^T`, 一次指令完成一次秩-1 更新。
+
+重写后的 `linalg.generic` (4 维):
 
 ```mlir
 linalg.generic {
