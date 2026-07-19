@@ -1,77 +1,91 @@
-# 目标机器 CSA 参数推演: 608 核 aarch64 SVE512+SME OpenEuler (含 HBM)
+# 目标机器分析 (含 HBM): 608 核 aarch64 SVE512+SME OpenEuler
 
-> 目标机器: 16 NUMA × 38 核 = 608 核, aarch64, SVE 512-bit + SME,
-> 无硬件 L3 cache, 但有 HBM (通过 memkind 软件管理)。
-> 本文推演 SConv 的 CSA 参数, 分析优化策略。
+> 目标机器: 2 颗芯片, 每芯片 8 NUMA × 38 核 = 304 核, 全机 16 NUMA × 38 = 608 核。
+> aarch64, SVE 512-bit + SME, 无硬件 L3 cache, 有 HBM (memkind 管理)。
+>
+> **不含 HBM 的场景分析** (帮助理解无 L3 时的问题) 见 `TARGET_MACHINE_NO_HBM.md`。
 
 ---
 
 ## 1. 硬件规格
 
-### 1.1 基础规格
+### 1.1 拓扑结构
+
+```
+1 台机器
+├── 芯片 0 (8 NUMA, 304 核)
+│   ├── NUMA 0 (38 核, L1×38, L2×38, HBM 分区, DDR 分区)
+│   ├── NUMA 1
+│   ├── ...
+│   └── NUMA 7
+└── 芯片 1 (8 NUMA, 304 核)
+    ├── NUMA 8
+    ├── ...
+    └── NUMA 15
+```
+
+### 1.2 基础规格
 
 | 参数 | 值 |
 |------|---|
 | CPU 架构 | aarch64 (ARMv9) |
 | 向量扩展 | SVE 512-bit (16 floats/vector), SME (16×16 tile) |
-| NUMA 节点数 | 16 |
-| 每节点核心数 | 38 |
-| 总核心数 | 608 |
+| 芯片数 | 2 / 台 |
+| NUMA / 芯片 | 8 |
+| 核 / NUMA | 38 |
+| 总核数 | 2 × 8 × 38 = **608** |
 | L1 缓存 | 32 KB / 核 (私有, ~4 cycles) |
 | L2 缓存 | 768 KB / 核 (私有, ~20 cycles) |
 | 硬件 L3 缓存 | **无** |
 | 操作系统 | OpenEuler (CentOS 系) |
 
-### 1.2 HBM 规格 (关键!)
+### 1.3 HBM 规格
 
 | 参数 | 值 |
 |------|---|
 | HBM 容量 (每 NUMA) | **4 GB** |
-| HBM 总带宽 | **44 TB/s** (8 die × 5.5 TB/s) |
-| HBM 每 NUMA 带宽 | ~2.75 TB/s (44/16) |
-| HBM 访问延迟 | ~100-150 cycles (远低于 DDR) |
-| HBM 使用方式 | memkind 接口显式分配 (非硬件 cache) |
+| HLM 总带宽 (每芯片) | **4 TB/s** |
+| HBM 带宽 (每 NUMA) | 4 TB/s / 8 = **512 GB/s** |
+| HBM 带宽 (每核) | 512 / 38 = **13.5 GB/s** |
+| HBM 访问延迟 | ~100-150 cycles |
 
-### 1.3 DDR 规格
+### 1.4 DDR 规格
 
 | 参数 | 值 |
 |------|---|
-| DDR 总容量 | 1 TB |
-| DDR 总带宽 | 358.4 GB/s (8 channel × 5.6 Gbps × 8B) |
-| DDR 每 NUMA 容量 | ~62.5 GB |
-| DDR 每 NUMA 带宽 | ~22.4 GB/s |
+| DDR 总带宽 (每芯片) | **358.4 GB/s** (8ch × 5.6Gbps × 8B) |
+| DDR 带宽 (每 NUMA) | 358.4 / 8 = **44.8 GB/s** |
+| DDR 带宽 (每核) | 44.8 / 38 = **1.18 GB/s** |
+| DDR 容量 | ~1 TB |
 | DDR 访问延迟 (NUMA local) | ~300 cycles |
 
-### 1.4 带宽对比
+### 1.5 带宽对比 (每核)
 
-| 层级 | 每 NUMA 带宽 | 延迟 | 带宽比 (vs DDR) |
+| 层级 | 每核带宽 | 延迟 | vs DDR |
 |------|:---:|:---:|:---:|
-| L2 cache | ~100+ GB/s (估) | ~20 | ~4.5x |
-| **HBM** | **~2.75 TB/s** | ~100-150 | **~123x** |
-| DDR (local) | ~22.4 GB/s | ~300 | 1x |
+| L2 cache | ~100+ GB/s | ~20 | ~85x |
+| **HBM** | **13.5 GB/s** | ~120 | **~11x** |
+| DDR (local) | 1.18 GB/s | ~300 | 1x |
 
-> **关键**: HBM 带宽是 DDR 的 **123 倍**。把卷积数据放 HBM, 可以极大减少访存瓶颈。
+> HBM 带宽是 DDR 的 11x (per core), 远低于 L2。微内核数据应来自 L2, HBM 只用于填充 L2。
 
-### 1.5 典型使用场景
+### 1.6 典型使用场景
 
-单算子通常不会用满全机 608 核, 而是使用 **1 个 NUMA 节点 (38 核)** + 该节点的本地 HBM (4 GB) 和 DDR (62.5 GB)。下面按单 NUMA 分析。
+单算子通常使用 **1 个 NUMA (38 核)** + 本地 HBM (4 GB)。下面按单 NUMA 分析。
 
-### 1.6 内存层次模型
+### 1.7 内存层次模型
 
 ```
-L1 cache (32 KB, 硬件管理, ~4 cycles)
+L1 cache  (32 KB/核, 硬件, ~4 cycles, 带宽极大)
   ↓ miss
-L2 cache (768 KB, 硬件管理, ~20 cycles)
+L2 cache  (768 KB/核, 硬件, ~20 cycles, ~100+ GB/s per core)
   ↓ miss
-HBM (4 GB, 软件管理 via memkind, ~100-150 cycles, 2.75 TB/s)  ← 当作 "L3"
-  ↓ miss / 不在 HBM
-DDR (62.5 GB/NUMA, ~300 cycles, 22.4 GB/s)
+HBM       (4 GB/NUMA, memkind 软件管理, ~120 cycles, 13.5 GB/s per core)
+  ↓ miss
+DDR       (~62.5 GB/NUMA, ~300 cycles, 1.18 GB/s per core)
 ```
 
-CSA 的三级模型映射:
-- CSA L1 → 硬件 L1 (32 KB)
-- CSA L2 → 硬件 L2 (768 KB)
-- CSA L3 → **HBM (4 GB)**, 延迟 ~100-150 cycles (不是 0!)
+CSA 三级模型映射: L1→硬件L1, L2→硬件L2, L3→**HBM** (4 GB, latency=120)。
 
 ---
 
