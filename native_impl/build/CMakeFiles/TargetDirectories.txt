@@ -1,7 +1,0 @@
-/Volumes/seagate/300Learn/310CodePractice/bytime/0718_sconvtransform_try/SConvTransform/native_impl/build/CMakeFiles/sconv_bench.dir
-/Volumes/seagate/300Learn/310CodePractice/bytime/0718_sconvtransform_try/SConvTransform/native_impl/build/CMakeFiles/edit_cache.dir
-/Volumes/seagate/300Learn/310CodePractice/bytime/0718_sconvtransform_try/SConvTransform/native_impl/build/CMakeFiles/rebuild_cache.dir
-/Volumes/seagate/300Learn/310CodePractice/bytime/0718_sconvtransform_try/SConvTransform/native_impl/build/CMakeFiles/list_install_components.dir
-/Volumes/seagate/300Learn/310CodePractice/bytime/0718_sconvtransform_try/SConvTransform/native_impl/build/CMakeFiles/install.dir
-/Volumes/seagate/300Learn/310CodePractice/bytime/0718_sconvtransform_try/SConvTransform/native_impl/build/CMakeFiles/install/local.dir
-/Volumes/seagate/300Learn/310CodePractice/bytime/0718_sconvtransform_try/SConvTransform/native_impl/build/CMakeFiles/install/strip.dir
