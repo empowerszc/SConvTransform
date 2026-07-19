@@ -588,6 +588,29 @@ packed_input shape: [N, K2, Nc, Fh, Fw, Nwin]  → collapse → [N, K2, K, Nwin]
 > SConv 用外积形式是因为 SME 的 `FMOPA` 指令计算的就是外积:
 > `ZA[16×16] += Z_a[16] × Z_b[16]^T`, 一次指令完成一次秩-1 更新。
 
+> **两条计算路径 (同一个矩阵乘结果)**
+>
+> SConv 微内核是外积形式, 但当前实际计算走的是 OpenBLAS:
+>
+> | | 当前路径 | 可选路径 (论文 Future Work) |
+> |---|---|---|
+> | 路径 | `lower.to_blas` → `cblas_sgemm` | `vector.contract` → `arm_sme.fmopa` |
+> | 内部 | OpenBLAS 的 Goto 算法 (分块+寄存器微内核, ARM 上用 `FMLA` 做向量点积) | K 次 `FMOPA`, 每次一个 16×16 外积 |
+> | 风格 | 更接近**内积** (逐元素向量乘加) | 纯**外积** (逐 k 秩-1 更新) |
+> | SME | 不一定 (取决于 OpenBLAS 是否有 SME 后端) | 直接利用 |
+> | 开销 | 函数调用 + 参数传递 | 内联指令, 无调用开销 |
+>
+> OpenBLAS 的 `cblas_sgemm` 内部不是纯内积, 而是经典的 Goto 算法 (分块 →
+> 面板打包 → 寄存器级微内核)。在 ARM 上用 `FMLA` (向量乘加, 一次 4 或 16 个
+> 元素的**点积**), 确实更接近内积风格。而 SME 的 `FMOPA` 是一条指令做 16×16
+> 的**外积**, 跟 `FMLA` 是完全不同的计算模式。
+>
+> SConv 微内核的 affine map 设计成外积形式, 就是为了将来不走 OpenBLAS,
+> 直接用 K 次 `FMOPA` 算完。论文在 Future Work 中明确提到:
+> *"eliminate microkernel invocation overhead by lowering the generic
+> microkernel entirely within MLIR, first to the Vector dialect and
+> then to architecture-specific intrinsics"*。
+
 重写后的 `linalg.generic` (4 维):
 
 ```mlir
