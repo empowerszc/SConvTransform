@@ -29,6 +29,7 @@ public:
   uint32_t halfHeuristic(uint32_t initial,
                          uint32_t (Strategies::*func)(uint32_t),
                          uint32_t cache_size) {
+    if (cache_size == 0) return 1;  // no cache at this level
     uint32_t solution = initial;
     uint32_t tiles_size = (this->*func)(solution);
     while (tiles_size > cache_size) {
@@ -41,6 +42,7 @@ public:
   uint32_t binarySearchHeuristic(uint32_t initial,
                                  uint32_t (Strategies::*func)(uint32_t),
                                  uint32_t cache_size) {
+    if (cache_size == 0) return 1;  // no cache at this level
     uint32_t solution = initial;
 
     // Test initial
