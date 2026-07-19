@@ -250,63 +250,209 @@ void packed_input_sve(float* dst, float* src, int nwin, int Iw, ...) {
 
 ## 4. 流水线 (Packing + Compute 重叠)
 
-### 问题
+### 4.0 当前循环结构和 buffer 分配 (ping-pong 可行性分析)
 
-当前执行是串行的: 先打包完所有 tile, 再逐个调用微内核计算:
-
-```
-打包 tile 0 → 打包 tile 1 → ... → 打包 tile N →
-微内核 tile 0 → 微内核 tile 1 → ... → 微内核 tile N
-```
-
-打包和计算之间没有重叠, 打包阶段 CPU 计算单元空闲。
-
-### 机会
-
-使用**双缓冲 (double buffering)**:
+先看当前代码在 IS 调度下, 每次内层迭代实际做了什么:
 
 ```
-打包 tile 0 → 打包 tile 1 → 打包 tile 2 → ...
-                ↓                ↓
-            微内核 tile 0    微内核 tile 1 → ...
+for batch
+  for ic_tile (step Nc=32)
+    for sp_outer (step K3×Nwin=2048)
+      for oc_outer (step K2×Nf=256)
+        // --- 滤波器多重打包 (做一次, hoisted 到这层) ---
+        // tensor.empty → 分配 buffer: [K2, Nc, Fh, Fw, Nf] = [32, 32, 3, 3, 8]
+        //   = 288 KB (放 L2)
+        // linalg.generic → 填充数据
+        // collapse_shape → [288, 8]... 不对, 是 [K2×288, Nf] = [9216, 8]
+
+        for sp_inner (step Nwin=16)         ← ★ ping-pong 的目标层
+          for oc_inner (step Nf=8)
+            // --- 输入打包 (每次迭代都做!) ---
+            // SConv.cpp:941  tensor.empty() 分配 buffer
+            //   shape: [N, Nc, Fh, Fw, Nwin] = [1, 32, 3, 3, 16]
+            //   大小: 32×3×3×16×4 = 18,432 bytes = 18 KB  ← 放得进 L1!
+            // linalg.generic → 逐元素从原始输入提取数据填入
+            // collapse_shape → [1, 288, 16] = [1, K, M]
+
+            // --- 微内核调用 ---
+            // linalg.generic → sgemm_blas_kernel
+            //   C[16, 8] += A[288, 16]^T × B[288, 8]
+            //   读 packed_input (18 KB) + packed_filter, 写 output tile
 ```
 
-打包下一块的同时, 用上一块的数据做计算。
+**关键观察**:
 
-### 实现思路
+1. **每次 `sp_inner` 迭代**: 先打包 (读输入 → 写 buffer), 再计算 (读 buffer → 写输出)
+2. **打包是内存密集型**: 逐元素 `tensor.extract`, 读原始输入, 写打包 buffer
+3. **微内核是计算密集型**: BLAS `sgemm`, 读打包 buffer + 滤波器, 写输出
+4. **两者访问不同数据**: 打包读原始输入, 微内核读打包 buffer — **天然可重叠**
+5. **buffer 只有 18 KB**: 两个 ping-pong buffer = 36 KB, 轻松放进 L1 (29 KB×0.9 实际可用... 嗯, 刚好溢出, 但 18 KB 单个是够的)
 
-**方案 A: MLIR Async dialect**
+### 4.1 ping-pong 的核心思路
 
-MLIR 有 `async` dialect, 可以表达异步执行:
+当前 (串行):
+```
+迭代 0:  [Pack tile 0] → [Compute tile 0] → [Pack tile 1] → [Compute tile 1] → ...
+                    ↑ 串行等待 ↑               ↑ 串行等待 ↑
+```
+
+优化后 (ping-pong):
+```
+迭代 0:  [Pack tile 0 → buf A]
+                            ↓
+         [Compute tile 0 ← buf A]     [Pack tile 1 → buf B]    ← 同时进行!
+                                       ↓
+                                   [Compute tile 1 ← buf B]   [Pack tile 2 → buf A]
+                                                             ↑ 交替使用两个 buffer
+```
+
+打包第 N+1 个 tile 的同时, 用第 N 个 tile 做计算。
+
+### 4.2 具体实现方案
+
+#### 方案 A: MLIR Async dialect (多线程)
+
+把打包和计算分别放进 `async.execute`, 用双缓冲交替:
 
 ```mlir
-// 打包 tile 0 (async)
-%token0 = async.execute {
-  %packed0 = pack(%input, tile0)
-  async.yield %packed0
+// 在 sp_inner 循环之前: 预分配两个 buffer
+%buf_A = memref.alloc() : memref<1x32x3x3x16xf32>   // 18 KB
+%buf_B = memref.alloc() : memref<1x32x3x3x16xf32>   // 18 KB
+
+// 迭代 0: 先打包到 buf_A
+%token_pack_0 = async.execute {
+  pack(%input, %tile_idx_0, %buf_A)
+  async.yield %buf_A
 }
-// 打包 tile 1 (async, 与 tile0 并行)
-%token1 = async.execute {
-  %packed1 = pack(%input, tile1)
-  async.yield %packed1
+
+scf.for %i = 0 to N step 1 {
+  // 当前迭代的 packed data (从上一次打包得到)
+  %packed_current = async.await %token_pack_current
+
+  // 异步打包下一个 tile 到另一个 buffer
+  %next_buf = scf.if (%i even) -> memref<...> { scf.yield %buf_B } else { scf.yield %buf_A }
+  %token_pack_next = async.execute {
+    pack(%input, %tile_idx_(%i+1), %next_buf)
+    async.yield %next_buf
+  }
+
+  // 同步: 计算当前 tile (用 packed_current)
+  compute_sgemm(%packed_current, %filter, %output_tile)
+
+  // 交换 token
+  %token_pack_current = %token_pack_next
 }
-// 等待 tile0 打包完, 做计算
-%data0 = async.await %token0
-%result0 = compute(%data0)
-// 等待 tile1, 做计算
-%data1 = async.await %token1
-%result1 = compute(%data1)
+
+// 最后一次: await 最后的 pack, 做最后一次 compute
+%packed_last = async.await %token_pack_current
+compute_sgemm(%packed_last, %filter, %output_tile)
 ```
 
-需要把 `scf.for` 改成异步的 pipeline 形式。
+需要的 lowering:
+```bash
+mlir-opt ... --convert-async-to-llvm   # async → LLVM coroutine + 线程池
+```
 
-**方案 B: 手写双缓冲 (在 lowering 层)**
+#### 方案 B: 软件流水线 (单线程, 编译器调度)
 
-在 `mlir-opt` 的 lowering 阶段, 用 `--convert-async-to-llvm` 把 async 操作转为 LLVM coroutine + 线程池。
+不用多线程, 而是让编译器把打包指令和计算指令交错排列:
 
-### 预期收益
+```
+原始循环体:
+  pack(tile_i)        ← 读输入, 写 buf
+  compute(buf)        ← 读 buf, 写输出
 
-如果打包占 30% 时间, 计算占 70%, 流水线后可隐藏大部分打包时间 → **~1.4x 加速**。
+软件流水后:
+  pack(tile_0) → buf_A                    ← 预热
+  loop:
+    compute(buf_A)  ||  pack(tile_i+1) → buf_B   ← 交错
+    compute(buf_B)  ||  pack(tile_i+2) → buf_A
+  compute(buf_last)                       ← 排空
+```
+
+在 MLIR 层面, 可以用 `transform.loop.pipeline` 或手动构造 pipeline 形式的 IR。
+
+#### 方案 C: 手写 C 包装层 (最简单, 不改 MLIR)
+
+在 `sgemm_blas_kernel.c` 里实现双缓冲:
+
+```c
+// 预分配两个 L1 大小的 buffer
+static float pack_buf[2][MAX_K * MAX_M];  // 288×16 = 4608 floats = 18 KB each
+
+// 打包函数 (SVE 加速)
+void pack_input_tile(float* src, float* dst, int K, int M, ...);
+
+// 双缓冲计算函数
+int sgemm_blas_kernel_pingpong(...) {
+    int buf = 0;
+    // 预打包第一个 tile
+    pack_input_tile(src + tile0_offset, pack_buf[0], K, M, ...);
+
+    for (int i = 0; i < num_tiles; i++) {
+        // 异步打包下一个 tile 到另一个 buffer
+        #pragma omp task  // 或用另一线程
+        pack_input_tile(src + tile(i+1)_offset, pack_buf[!buf], K, M, ...);
+
+        // 用当前 buffer 计算
+        cblas_sgemm(..., pack_buf[buf], ...);
+
+        // 等待打包完成
+        #pragma omp taskwait
+        buf = !buf;  // 交换
+    }
+}
+```
+
+这种方案不改 MLIR 代码, 只改 `sgemm_blas_kernel.c`。但需要把多个 microkernel 调用合并成一个函数 (因为 ping-pong 需要跨迭代管理 buffer)。
+
+### 4.3 代码改动位置
+
+| 方案 | 改动文件 | 改动内容 |
+|------|---------|---------|
+| A (async) | `SConv.cpp` `applyInputPacking()` + `applyTileTo()` | 把 `tensor.empty` 移到循环外, 加 `async.execute` 包装打包, 加 `async.await` |
+| B (软件流水) | Transform IR | 加 `transform.loop.pipeline` 操作 |
+| C (C 包装层) | `runtime/sgemm_blas_kernel.c` | 重写为双缓冲版本, 把多个 tile 的打包+计算合并 |
+
+### 4.4 预期收益分析
+
+假设打包占 30% 时间, 计算占 70%:
+
+| 场景 | 打包时间 | 计算时间 | 总时间 | 加速 |
+|------|:---:|:---:|:---:|:---:|
+| 当前 (串行) | 30% | 70% | 100% | 1x |
+| ping-pong (完美隐藏) | 0% (被隐藏) | 70% | 70% | 1.43x |
+| ping-pong (部分隐藏) | 10% | 70% | 80% | 1.25x |
+
+如果同时配合向量化打包 (SVE, 把打包时间从 30% 降到 15%):
+
+| 场景 | 打包 | 计算 | 总时间 | 加速 |
+|------|:---:|:---:|:---:|:---:|
+| 当前 | 30% | 70% | 100% | 1x |
+| SVE 打包 + ping-pong | 0% | 70% | 70% | 1.43x |
+| SVE 打包, 无 ping-pong | 15% | 70% | 85% | 1.18x |
+
+### 4.5 还有第二层 ping-pong 机会 (多重打包层)
+
+在 `oc_outer` 层, 滤波器多重打包也是每次迭代分配 + 填充:
+
+```
+for oc_outer (step K2×Nf):
+  // 分配 multipack buffer: [K2, Nc, Fh, Fw, Nf] = 288 KB
+  // 填充: 从原始滤波器提取 K2 个 tile
+  // 然后用这个 buffer 跑 K3/Nwin 次 sp_inner 迭代
+```
+
+这里也可以 ping-pong: 在用当前 multipack buffer 跑 sp_inner 循环的同时, 异步打包下一个 oc_outer 的 multipack。
+
+但 buffer 更大 (288 KB × 2 = 576 KB), 需要确认能放进 L2。对 M4 (L2 = 16 MB shared) 没问题; 对小 L2 的机器可能不够。
+
+| 层级 | buffer 大小 | 两倍 buffer | 能放进 |
+|------|:---:|:---:|---|
+| sp_inner (输入打包) | 18 KB | 36 KB | L1 |
+| oc_outer (滤波器多重打包) | 288 KB | 576 KB | L2 |
+
+**两层 ping-pong 可以叠加**: 外层滤波器 multipack + 内层输入 pack, 各自双缓冲, 理论上能隐藏全部打包时间。
 
 ---
 
