@@ -1,25 +1,77 @@
-# 目标机器 CSA 参数推演: 608 核 aarch64 SVE512+SME OpenEuler
+# 目标机器 CSA 参数推演: 608 核 aarch64 SVE512+SME OpenEuler (含 HBM)
 
-> 目标机器: 16 NUMA × 38 核 = 608 核, aarch64, SVE 512-bit + SME, 无 L3 cache。
-> 本文推演该机器上 SConv 的 CSA 参数, 分析需修改的代码, 并给出优化策略。
+> 目标机器: 16 NUMA × 38 核 = 608 核, aarch64, SVE 512-bit + SME,
+> 无硬件 L3 cache, 但有 HBM (通过 memkind 软件管理)。
+> 本文推演 SConv 的 CSA 参数, 分析优化策略。
 
 ---
 
 ## 1. 硬件规格
 
+### 1.1 基础规格
+
 | 参数 | 值 |
 |------|---|
 | CPU 架构 | aarch64 (ARMv9) |
-| 向量扩展 | SVE 512-bit, SME |
+| 向量扩展 | SVE 512-bit (16 floats/vector), SME (16×16 tile) |
 | NUMA 节点数 | 16 |
 | 每节点核心数 | 38 |
 | 总核心数 | 608 |
-| L1 缓存 | 32 KB / 核 (私有) |
-| L2 缓存 | 768 KB / 核 (私有) |
-| L3 缓存 | **无** |
+| L1 缓存 | 32 KB / 核 (私有, ~4 cycles) |
+| L2 缓存 | 768 KB / 核 (私有, ~20 cycles) |
+| 硬件 L3 缓存 | **无** |
 | 操作系统 | OpenEuler (CentOS 系) |
 
-**关键特征: 无 L3 缓存。** CSA 的三级缓存模型 (L1/L2/L3) 中, L3 层变为 DRAM。
+### 1.2 HBM 规格 (关键!)
+
+| 参数 | 值 |
+|------|---|
+| HBM 容量 (每 NUMA) | **4 GB** |
+| HBM 总带宽 | **44 TB/s** (8 die × 5.5 TB/s) |
+| HBM 每 NUMA 带宽 | ~2.75 TB/s (44/16) |
+| HBM 访问延迟 | ~100-150 cycles (远低于 DDR) |
+| HBM 使用方式 | memkind 接口显式分配 (非硬件 cache) |
+
+### 1.3 DDR 规格
+
+| 参数 | 值 |
+|------|---|
+| DDR 总容量 | 1 TB |
+| DDR 总带宽 | 358.4 GB/s (8 channel × 5.6 Gbps × 8B) |
+| DDR 每 NUMA 容量 | ~62.5 GB |
+| DDR 每 NUMA 带宽 | ~22.4 GB/s |
+| DDR 访问延迟 (NUMA local) | ~300 cycles |
+
+### 1.4 带宽对比
+
+| 层级 | 每 NUMA 带宽 | 延迟 | 带宽比 (vs DDR) |
+|------|:---:|:---:|:---:|
+| L2 cache | ~100+ GB/s (估) | ~20 | ~4.5x |
+| **HBM** | **~2.75 TB/s** | ~100-150 | **~123x** |
+| DDR (local) | ~22.4 GB/s | ~300 | 1x |
+
+> **关键**: HBM 带宽是 DDR 的 **123 倍**。把卷积数据放 HBM, 可以极大减少访存瓶颈。
+
+### 1.5 典型使用场景
+
+单算子通常不会用满全机 608 核, 而是使用 **1 个 NUMA 节点 (38 核)** + 该节点的本地 HBM (4 GB) 和 DDR (62.5 GB)。下面按单 NUMA 分析。
+
+### 1.6 内存层次模型
+
+```
+L1 cache (32 KB, 硬件管理, ~4 cycles)
+  ↓ miss
+L2 cache (768 KB, 硬件管理, ~20 cycles)
+  ↓ miss
+HBM (4 GB, 软件管理 via memkind, ~100-150 cycles, 2.75 TB/s)  ← 当作 "L3"
+  ↓ miss / 不在 HBM
+DDR (62.5 GB/NUMA, ~300 cycles, 22.4 GB/s)
+```
+
+CSA 的三级模型映射:
+- CSA L1 → 硬件 L1 (32 KB)
+- CSA L2 → 硬件 L2 (768 KB)
+- CSA L3 → **HBM (4 GB)**, 延迟 ~100-150 cycles (不是 0!)
 
 ---
 
@@ -71,186 +123,136 @@ if (arch_.l3_size == 0) {
 
 ---
 
-## 3. 参数推演
+## 3. 参数推演 (含 HBM)
 
-### 3.1 ArchInfo 参数
+### 3.1 ArchInfo 参数 (更新: HBM 作为 L3)
 
 ```cpp
 ArchInfo arch = {
-    (uint32_t)(32768 * 0.9),     // L1: 29491 bytes (~29 KB)
-    (uint32_t)(768 * 1024 * 0.9), // L2: 706562 bytes (~690 KB)
-    (uint32_t)0,                  // L3: 0 (无 L3!)
-    4,                            // L1 latency: ~4 cycles (aarch64 典型)
-    20,                           // L2 latency: ~20 cycles
-    300,                          // L3 latency = mem latency (L3 miss = DRAM)
-    300,                          // mem latency: ~300 cycles (NUMA local DRAM)
-    128                           // cache line: 128 bytes (需实测确认)
+    (uint32_t)(32768 * 0.9),        // L1: 29491 bytes (~29 KB)
+    (uint32_t)(768 * 1024 * 0.9),    // L2: 706562 bytes (~690 KB)
+    (uint32_t)(4UL * 1024 * 1024 * 1024 * 0.9),  // L3 = HBM: ~3.6 GB!
+    4,      // L1 latency: ~4 cycles
+    20,     // L2 latency: ~20 cycles
+    120,    // L3 = HBM latency: ~120 cycles (远低于 DDR 300!)
+    300,    // mem = DDR latency: ~300 cycles (NUMA local)
+    128     // cache line: 128 bytes (需实测)
 };
 ```
 
-> 注: cache_line 大小需在目标机器上实测: `getconf LEVEL1_DCACHE_LINESIZE`
-> NUMA 远端 DRAM 延迟更高 (~600-1000 cycles), 需避免跨 NUMA 访问。
+**关键变化**: L3 不再是 0, 而是 3.6 GB HBM! 延迟 120 cycles (远低于 DDR 300)。
+CSA 的 heuristic 不再死循环, K3 可以取到数据量允许的最大值。
 
-### 3.2 mKInfo 参数 (两套方案)
+### 3.2 mKInfo 参数
 
-**方案 A: 当前配置 (Nwin=16, Nf=8)**
+**方案 A (当前)**: `mK_info = [16, 8, 128]` — SME 半 tile (16×8)
+**方案 B (SME 优化, 推荐)**: `mK_info = [16, 16, 256]` — SME 全 tile (16×16)
 
-```
-mKInfo mK = {16, 8, 128};
-```
-- 微内核: C[16,8] += A[288,16]^T × B[288,8]
-- 每次 36,864 FMA
-- SME 只用半 tile (FMOPS 16×8 或 masked FMOPA)
+下面以方案 B 为主推演, 方案 A 列出对比。
 
-**方案 B: SME 优化配置 (Nwin=16, Nf=16)**
-
-```
-mKInfo mK = {16, 16, 256};
-```
-- 微内核: C[16,16] += A[K,16]^T × B[K,16]
-- 每次 73,728 FMA (翻倍)
-- SME 全 tile (FMOPA 16×16), 每条指令 256 FMA
-- K/16 次 FMOPA 即可完成归约
-
-### 3.3 方案 A 推演 (Nwin=16, Nf=8)
+### 3.3 方案 B 推演 (Nwin=16, Nf=16, SME 全 tile)
 
 #### 基础量
 
 ```
 in_size  = Nwin × Fh × Fw × 4 = 16 × 3 × 3 × 4 = 576 bytes
-w_size   = Nf × Fh × Fw × 4   = 8 × 3 × 3 × 4   = 288 bytes
-out_size = Nwin × Nf × 4      = 16 × 8 × 4       = 512 bytes
+w_size   = Nf × Fh × Fw × 4   = 16 × 3 × 3 × 4 = 576 bytes
+out_size = Nwin × Nf × 4      = 16 × 16 × 4     = 1024 bytes
 ```
 
 #### Nc (L1 约束)
 
 ```
 tileSizeL1(Nc) = (in_size + w_size) × Nc + out_size
-              = 864 × Nc + 512 ≤ L1 = 29491
+              = 1152 × Nc + 1024 ≤ L1 = 29491
 
-Nc=32: 864×32+512 = 28160 ≤ 29491 → 满足 ✓
-Nc=64: 864×64+512 = 55808 > 29491 → 不满足
+Nc=16: 1152×16+1024 = 19456 ≤ 29491 → 满足 ✓
+Nc=32: 1152×32+1024 = 37888 > 29491 → 不满足 ✗
 
-结果: Nc = 32, tCH = 128/32 = 4
+结果: Nc = 16, tCH = Ic/16
+  (对 Ic=128: tCH=8; 对 Ic=192: tCH=12)
 ```
 
 #### K2 (L2 约束, IS 调度)
 
 ```
 tileSizeL2(K2) = in_size + K2 × (w_size + out_size)
-              = 576 + K2 × 800 ≤ L2 = 706562
+              = 576 + K2 × 1600 ≤ L2 = 706562
 
-最大 K2 = (706562-576)/800 = 882
-但 K2 ≤ w_tiles_per_tch = Oc/Nf = 256/8 = 32
-
-结果: K2 = 32 (数据量限制, 非缓存限制)
-```
-
-L2 利用率: `(576 + 32×800) / 706562 = 26176 / 706562 = 3.7%`
-→ **L2 大幅未充分利用!** 可以增大 Nf 或 Nwin 来更好利用 L2。
-
-#### K3 (无 L3!)
-
-```
-L3_size = 0 → K3 = 1 (代码修复后)
-
-含义: 每个输入 tile 从 DRAM 加载, 无跨 tile 复用。
-extra_k3 = in_tiles_per_tch % 1 = 0 (无边界)
-```
-
-#### WS 调度下的 K2
-
-```
-tileSizeL2(K2) = K2 × in_size + w_size + K2 × out_size
-              = K2 × 1088 + 288 ≤ L2 = 706562
-
-最大 K2 = (706562-288)/1088 = 649
-K2 ≤ in_tiles_per_tch = (Oh×Ow)/Nwin = 4096/16 = 256
-
-结果: K2 = 256 (全部输入 tile 放进 L2!)
-L2 利用率: (256×1088+288) / 706562 = 278656 / 706562 = 39.4%
-```
-
-**关键发现**: WS 调度下, 所有 256 个输入 tile 都能放进 L2 (只需 272 KB)!
-这意味着输入只需从 DRAM 加载一次, 之后全部从 L2 命中。
-而 IS 调度只放 32 个滤波器 tile (26 KB), 利用率仅 3.7%。
-
-#### IS vs WS 代价比较
-
-对这台机器 (大 L2, 无 L3), **WS 大概率更优**:
-
-| | IS | WS |
-|---|---|---|
-| K2 | 32 (滤波器 tile 放 L2, 26 KB) | 256 (输入 tile 放 L2, 272 KB) |
-| K3 | 1 (输入从 DRAM) | 1 (滤波器从 DRAM) |
-| L2 利用率 | 3.7% | 39.4% |
-| DRAM 访问 | 输入 tile 每次从 DRAM | 滤波器 tile 每次从 DRAM |
-| 谁驻留 L1 | 输入 (576 B/tile) | 滤波器 (288 B/tile) |
-
-WS 的优势: 输入 tile 更大 (576 B) 但全部放 L2; 滤波器 tile 更小 (288 B),
-从 DRAM 加载的开销更小。输入是"大而少复用"的数据 (每个 tile 只用一次),
-滤波器是"小而多复用"的数据 (每个 tile 对所有窗口复用)。
-
-### 3.4 方案 B 推演 (Nwin=16, Nf=16, SME 全 tile)
-
-#### 基础量
-
-```
-in_size  = 16 × 3 × 3 × 4 = 576 bytes  (不变)
-w_size   = 16 × 3 × 3 × 4 = 576 bytes  (翻倍!)
-out_size = 16 × 16 × 4    = 1024 bytes  (翻倍!)
-```
-
-#### Nc (L1 约束)
-
-```
-tileSizeL1(Nc) = (576 + 576) × Nc + 1024 = 1152 × Nc + 1024 ≤ 29491
-
-Nc=16: 1152×16+1024 = 19456 ≤ 29491 → 满足 ✓
-Nc=32: 1152×32+1024 = 37888 > 29491 → 不满足 ✗
-
-结果: Nc = 16 (减半!), tCH = 128/16 = 8
-```
-
-Nc 减半意味着通道迭代次数翻倍 (4→8), 但每次微内核调用的输出量也翻倍 (128→256)。
-
-#### K2 (L2 约束, IS 调度)
-
-```
-tileSizeL2(K2) = 576 + K2 × (576 + 1024) = 576 + K2 × 1600 ≤ 706562
 最大 K2 = (706562-576)/1600 = 441
-K2 ≤ w_tiles_per_tch = 256/16 = 16
+K2 ≤ w_tiles_per_tch = Oc/Nf = Oc/16
 
-结果: K2 = 16
+对 Oc=192: K2 = min(192/16, 441) = 12
+对 Oc=256: K2 = min(256/16, 441) = 16
 ```
+
+L2 利用率 (Oc=192): `(576 + 12×1600) / 706562 = 19776 / 706562 = 2.8%` — 仍然很低。
 
 #### K2 (WS 调度)
 
 ```
-tileSizeL2(K2) = K2 × 576 + 576 + K2 × 1024 = K2 × 1600 + 576 ≤ 706562
-最大 K2 = (706562-576)/1600 = 441
-K2 ≤ in_tiles_per_tch = 4096/16 = 256
+tileSizeL2(K2) = K2 × in_size + w_size + K2 × out_size
+              = K2 × 1600 + 576 ≤ L2 = 706562
 
-结果: K2 = 256 (全部输入 tile 仍能放 L2)
-L2 利用率: (256×1600+576)/706562 = 409776/706562 = 58.0%
+最大 K2 = (706562-576)/1600 = 441
+K2 ≤ in_tiles_per_tch = (Oh×Ow)/Nwin
+
+对 Oh×Ow=1600 (custom_0): K2 = min(100, 441) = 100
+对 Oh×Ow=4096: K2 = min(256, 441) = 256
 ```
 
-### 3.5 两种方案汇总
+L2 利用率 (Oh×Ow=1600): `(100×1600+576)/706562 = 160576/706562 = 22.7%` — 好很多。
 
-| 参数 | 方案 A (Nf=8) | 方案 B (Nf=16, SME) |
+#### K3 (HBM 约束!)
+
+```
+tileSizeL3(K3) = K3 × in_size + K2 × w_size + K2 × K3 × out_size
+              = K3 × 576 + K2 × 576 + K2 × K3 × 1024
+              = K3 × (576 + K2 × 1024) + K2 × 576 ≤ L3 = 3.6 GB
+
+以 K2=100 (WS, Oh×Ow=1600) 为例:
+tileSizeL3(K3) = K3 × (576 + 100×1024) + 100×576
+              = K3 × 102976 + 57600 ≤ 3,865,475,072
+
+最大 K3 = (3.6G - 57600) / 102976 ≈ 37,000+
+
+但 K3 ≤ w_tiles_per_tch = Oc/Nf = 192/16 = 12
+
+结果: K3 = 12 (数据量限制, 非 HBM 容量限制)
+```
+
+**关键发现**: HBM (3.6 GB) 能容纳的 tile 数远超实际需要 (K3=12)。所有滤波器 tile
+都能放进 HBM, 加载一次后全部从 HBM 命中。
+
+HBM 利用率: `(12×102976+57600) / 3.6G ≈ 1.24 MB / 3.6 GB = 0.03%` — 容量绰绰有余。
+
+### 3.4 方案 A 对比 (Nwin=16, Nf=8)
+
+| 参数 | 方案 A (Nf=8) | 方案 B (Nf=16) |
 |------|:---:|:---:|
-| Nwin | 16 | 16 |
-| Nf | 8 | 16 |
-| Nc | 32 | 16 |
-| tCH | 4 | 8 |
-| K2 (IS) | 32 | 16 |
-| K2 (WS) | **256** | **256** |
-| K3 | 1 | 1 |
+| Nc | 32 (L1 利用率 95%) | 16 (66%) |
+| K2 (IS, Oc=192) | 24 (L2: 1.9%) | 12 (L2: 2.8%) |
+| K2 (WS, Ohw=1600) | 100 (L2: 15.3%) | 100 (L2: 22.7%) |
+| K3 (IS, HBM) | 24 (HBM 几乎无限) | 12 |
+| K3 (WS, HBM) | 100+ (HBM 几乎无限) | 100+ |
 | 微内核 FMA/次 | 36,864 | 73,728 |
-| SME 利用 | 半 tile (16×8) | **全 tile (16×16)** |
-| L2 利用率 (WS) | 39.4% | 58.0% |
+| SME tile 利用 | 50% (16×8) | **100% (16×16)** |
 
-**推荐**: 方案 B + WS 调度。SME 全 tile 利用 + L2 充分利用 + 输入全缓存。
+### 3.5 IS vs WS (含 HBM)
+
+| | IS (输入驻留 L1) | WS (权重驻留 L1) |
+|---|---|---|
+| L2 放什么 | 滤波器 tile (K2 个) | 输入 tile (K2 个) |
+| HBM 放什么 | 输入 tile (K3 个) | 滤波器 tile (K3 个) |
+| K2 (L2, Oc=192) | 12 (19 KB) | 100 (156 KB) |
+| K3 (HBM) | 100+ (57 KB) | 12+ (7 KB) |
+| L2 利用率 | 2.8% | **22.7%** |
+| HBM 利用率 | 0.001% | 0.0003% |
+
+**结论: WS 调度更优**。原因:
+1. L2 利用率: WS 22.7% >> IS 2.8% (输入 tile 更多, 但每个更小)
+2. HBM 效果: HBM 容量 (4 GB) 远超任何 tile 集大小, 无论 IS/WS 都能全缓存
+3. 带宽利用: HBM 带宽 2.75 TB/s, 数据只需从 HBM 加载一次, 之后全在 L2/L1
 
 ---
 
@@ -332,85 +334,276 @@ taskset -c 0-37 ./sconv-opt ...   # NUMA 0 的 38 个核
 
 ---
 
-## 5. 完整参数配置
+## 5. HBM 优化策略 (新增)
+
+### 5.1 HBM 作为软件管理的 L3
+
+HBM (4 GB/NUMA, 2.75 TB/s) 通过 memkind 显式分配, 不是硬件 cache。
+需要主动把数据放到 HBM, 才能享受高带宽。
+
+### 5.2 哪些数据应该放 HBM?
+
+| 数据 | 大小 (custom_0) | 放哪? | 理由 |
+|------|---:|---|------|
+| 原始输入 tensor | 4×192×42×42×4 = 5.1 MB | **HBM** | 太大放不进 L2, 被 packing 反复读取 |
+| 原始权重 tensor | 192×192×3×3×4 = 1.3 MB | **HBM** | 被 packing 读取 |
+| 输出 tensor | 4×192×40×40×4 = 4.7 MB | **HBM** | 累积结果 |
+| 打包输入 tile (单次) | 576 B | L1 | 微内核直接读 |
+| 打包滤波器 tile (单次) | 576 B | L1 | 微内核直接读 |
+| 多重打包 buffer (WS) | 160 KB | **L2** | 放进 L2 复用 |
+| 多重打包 buffer (IS) | 19 KB | L2 | 放进 L2 复用 |
+
+> 对 custom_0 (5.1 MB 输入 + 1.3 MB 权重 + 4.7 MB 输出 = 11.1 MB), 4 GB HBM 绰绰有余。
+
+### 5.3 memkind 集成方案
+
+**方案 A: 在 MLIR payload 层分配 HBM**
+
+在 `performance_payload.mlir` 的 main 函数中, 用 C 函数分配 HBM:
+
+```c
+// runtime/hbm_alloc.c
+#include <hbwmalloc.h>
+void* alloc_hbm(size_t size) { 
+    void* ptr; hbw_posix_memalign(&ptr, 64, size); return ptr; 
+}
+void free_hbm(void* ptr) { hbw_free(ptr); }
+```
+
+在 MLIR payload 中调用:
+```mlir
+func.func @main() {
+  %size = arith.constant ... : index
+  %ptr = func.call @alloc_hbm(%size) : (index) -> !llvm.ptr
+  %input = memref.view %ptr ...  // 从 HBM 指针创建 memref
+  ...
+}
+```
+
+**方案 B: 在 sgemm_blas_kernel 包装层使用 HBM**
+
+让打包后的 tile 数据驻留在 HBM:
+```c
+// 在 sgemm_blas_kernel 初始化时, 把 input/weight 数据拷贝到 HBM
+static float* hbm_input = NULL;
+static float* hbm_weight = NULL;
+
+void init_sconv_hbm(float* input, float* weight, size_t in_size, size_t w_size) {
+    if (!hbm_input) hbw_posix_memalign((void**)&hbm_input, 64, in_size);
+    if (!hbm_weight) hbw_posix_memalign((void**)&hbm_weight, 64, w_size);
+    memcpy(hbm_input, input, in_size);   // DDR → HBM 一次性拷贝
+    memcpy(hbm_weight, weight, w_size);
+}
+```
+
+**方案 C: 用 LD_PRELOAD 拦截 malloc (最简单, 不改代码)**
+
+```bash
+# 用 memkind 的 hbw_malloc 替换所有 malloc
+LD_PRELOAD=/usr/lib/libhbw.so.1 HBW_MALLOC_PREFER_HBW=1 ./sconv-opt ...
+```
+
+这样所有动态分配 (包括 `memref.alloca` → `malloc`) 都会优先用 HBM。
+
+### 5.4 HBM 带宽分析
+
+**单 NUMA (38 核) 的带宽预算**:
+
+```
+HBM 带宽: 2.75 TB/s / 38 cores = 72.4 GB/s per core
+L2 带宽:  ~100+ GB/s per core (硬件 cache, 更快)
+DDR 带宽: 22.4 GB/s / 38 = 0.59 GB/s per core
+```
+
+**微内核算术强度分析** (方案 B, K=288):
+```
+数据读取: A[K,M]=288×16×4=18KB + B[K,N]=288×16×4=18KB = 36 KB
+数据写入: C[M,N]=16×16×4=1 KB
+总数据:   37 KB
+总 FMA:    2×K×M×N = 2×288×16×16 = 147,456
+算术强度: 147,456 / 37,000 = 3.98 FLOP/byte
+```
+
+**屋顶线分析** (per core):
+```
+SME 计算峰值: ~1,280 GFLOPS (估算)
+HBM 带宽 (per core): 72.4 GB/s
+平衡点算术强度: 1280 / 72.4 = 17.7 FLOP/byte
+实际 AI: 3.98 FLOP/byte  ← 远低于平衡点!
+
+→ 单次微内核调用是 HBM 带宽受限的!
+```
+
+**如何提高算术强度**:
+
+| 策略 | 效果 | 说明 |
+|------|------|------|
+| **L2 缓存 multipack** | AI 提升 10x+ | 打包数据放 L2 (768 KB), 微内核从 L2 读 (100+ GB/s) |
+| **增大 Nf** | AI ×2 | Nf=32: AI=7.9, 但 L1 放不下 |
+| **减少 K (减小 Nc)** | AI 提升 | Nc=8: K=72, 但 channel 迭代增多 |
+| **ping-pong + HBM 预取** | 隐藏访存 | 从 HBM 预取下一 tile 到 L2, 同时算当前 L2 中的 tile |
+
+**关键**: 微内核数据访问主要来自 **L2 缓存的 multipack buffer** (100-160 KB),
+不是 HBM。L2 带宽 (100+ GB/s) 远高于 HBM per-core (72 GB/s), 所以实际瓶颈在 L2 带宽,
+HBM 只在 L2 miss 时才被访问 (加载数据进 L2 的 packing 阶段)。
+
+### 5.5 HBM-aware ping-pong (L2 ↔ HBM 双缓冲)
+
+结合 ping-pong 和 HBM:
+
+```
+HBM (4 GB): 原始输入/权重 tensor (一次性加载)
+    ↓ 预取 (HBM 带宽 72 GB/s per core)
+L2 (768 KB): multipack buffer (打包好的 K2 个 tile)
+    ↓ 直接读 (L2 带宽 100+ GB/s per core)
+L1 (32 KB): 当前微内核 tile (in + w + out)
+    ↓ SME 指令
+寄存器: FMOPA 16×16 外积
+```
+
+**三层 ping-pong**:
+```
+Layer 1 (L1 ↔ L2):  微内核计算时, 从 L2 预取下一 input tile 到 L1
+                    buffer: 2×18 KB = 36 KB, 放得进 L1 (29 KB)... 刚好溢出
+                    → 用单 buffer, 依赖硬件 prefetcher
+
+Layer 2 (L2 ↔ HBM): 从 L2 算时, 从 HBM 预取打包数据到另一 L2 区域
+                    buffer: 2×160 KB = 320 KB, 放得进 L2 (690 KB) ✓
+
+Layer 3 (HBM ↔ DDR): 初始数据加载, DDR → HBM (一次性)
+                    带宽: 22.4 GB/s → 5.1 MB 加载约 0.2 ms (可忽略)
+```
+
+### 5.6 HBM 带宽 vs SME 计算: 谁是瓶颈?
+
+对 custom_0 (4×192×40×40, 4.25 GFLOP) 单核分析:
+
+```
+计算时间 (SME 峰值): 4.25G / 1280G = 3.3 ms
+数据加载 (HBM, 首次): 11 MB / 72 GB/s = 0.15 ms  ← 远小于计算时间!
+数据加载 (L2, 复用): 每次微内核 37 KB / 100 GB/s = 0.37 μs
+    × 总微内核次数 (4.25G / 73,728 = 57,640 次) = 21.3 ms
+
+→ 瓶颈: L2 带宽 (21 ms), 不是 HBM (0.15 ms) 也不是 SME 计算 (3.3 ms)
+→ 优化方向: 减少微内核次数 (增大 tile) 或减少每次数据读取 (L2 复用 / ping-pong)
+```
+
+**38 核并行后**:
+```
+L2 带宽 (每核独立): 38 × 100 = 3,800 GB/s
+计算时间: 21 ms / 38 = 0.55 ms (L2 受限)
+HBM 首次加载: 0.15 ms (串行, 只需一次)
+总时间: ~0.7 ms
+GFLOPS: 4.25G / 0.7ms = 6,071 GFLOPS = 6.1 TFLOPS
+```
+
+---
+
+## 6. 完整参数配置 (含 HBM)
 
 在 Transform IR 中指定:
 
 ```mlir
-// 方案 B: SME 全 tile + WS 调度
+// 方案 B: SME 全 tile + WS 调度 + HBM 作为 L3
 %ukernels, %loops = transform.structured.sconv %convs
-  { mK_info = [16, 16],                                      // Nwin=16, Nf=16
-    arch_info = [32768, 786432, 0, 128],                     // L1=32K, L2=768K, L3=0, line=128
-    latency = [4, 20, 300, 300]                               // L1=4, L2=20, L3=300=mem, mem=300
+  { mK_info = [16, 16],                                    // Nwin=16, Nf=16 (SME 全 tile)
+    arch_info = [32768, 786432, 4294967296, 128],         // L1=32K, L2=768K, L3=4G(HBM), line=128
+    latency = [4, 20, 120, 300]                            // L1=4, L2=20, HBM=120, DDR=300
   }
-  : (!transform.op<"linalg.conv_2d_nchw_fchw">)
-  -> (!transform.op<"linalg.generic">, !transform.any_op)
 ```
 
 或在代码中修改默认值 (`SConv.cpp:2239-2244`):
 
 ```cpp
-mKInfo mK = {16, 16, 256};  // Nwin=16, Nf=16, Noutput=256
+mKInfo mK = {16, 16, 256};           // SME 全 tile
 ArchInfo arch = {
-    (uint32_t)(32768 * 0.9),       // L1
-    (uint32_t)(768 * 1024 * 0.9),  // L2 = 690 KB
-    (uint32_t)0,                    // L3 = 0 (无 L3!)
-    4, 20, 300, 300, 128           // latencies, cache_line
+    (uint32_t)(32768 * 0.9),          // L1
+    (uint32_t)(768 * 1024 * 0.9),     // L2
+    (uint32_t)(4UL * 1024 * 1024 * 1024 * 0.9),  // L3 = HBM (4 GB)
+    4, 20, 120, 300, 128              // latencies, cache_line
 };
+```
+
+运行时用 memkind 把数据分配到 HBM:
+
+```bash
+# 方式 1: LD_PRELOAD (最简单)
+export LD_PRELOAD=/usr/lib/libhbw.so.1
+export HBW_MALLOC_PREFER_HBW=1
+numactl --cpunodebind=0 --membind=0 ./sconv-opt ...
+
+# 方式 2: 在 payload 中显式调用 alloc_hbm (见 §5.3)
 ```
 
 ---
 
-## 6. 预期性能
+## 7. 预期性能 (含 HBM)
 
-### 6.1 单核性能估算
+### 7.1 单 NUMA (38 核) 性能
 
-| 配置 | 微内核 FMA/次 | SME 指令/次 | 假设 IPC | GFLOPS (单核) |
-|------|:---:|:---:|:---:|:---:|
-| 方案 A (Nf=8, OpenBLAS) | 36,864 | — | — | ~15 (实测) |
-| 方案 B (Nf=16, SME) | 73,728 | 288 FMOPA | 1 FMOPA/cycle | 288×256/1 = 73,728 FMA/cycle... |
+以 custom_0 (4×192×40×40, 4.25 GFLOP) 为例:
 
-更实际的估算:
-- SME FMOPA 吞吐: 假设 1 条/cycle, 每条 256 FMA
-- 微内核需要 K=288 条 FMOPA → 288 cycles
-- 产出: 16×16 = 256 个输出值
-- 有效 GFLOPS = 256×2 / 288cycles ≈ 1.78 FMA/cycle
-- 按频率 2.5 GHz: 1.78 × 2.5 = **4.4 GFLOPS** (单核)
+| 环节 | 单核时间 | 38 核并行 | 说明 |
+|------|:---:|:---:|------|
+| HBM 首次加载 | 0.15 ms | 0.15 ms (串行) | 11 MB / 72 GB/s, 只需一次 |
+| L2 packing 读取 | 21 ms | 0.55 ms | 37 KB × 57,640 次 / 100 GB/s / 38 |
+| SME 计算 (峰值) | 3.3 ms | 0.09 ms | 4.25G / 1,280G / 38 |
+| **总时间 (瓶颈)** | 21 ms (L2 受限) | **~0.7 ms** | HBM + L2 + 计算 |
+| **GFLOPS** | 200 | **6,071 (6.1 TFLOPS)** | 4.25G / 0.7ms |
 
-等等, 这太低了。让我重新算:
-- 每个 FMOPA = 16×16 = 256 FMA
-- 288 条 FMOPA = 288 × 256 = 73,728 FMA
-- 如果 1 FMOPA/cycle, 288 cycles 完成 73,728 FMA
-- FLOPS = 73,728 × 2 / 288 = 512 FLOP/cycle (×2 因为 FMA=2 FLOP)
-- 按频率 2.5 GHz: 512 × 2.5 = **1280 GFLOPS** (单核峰值)
+### 7.2 与 M4 对比
 
-但这没算访存和打包开销。实际可能只有峰值的 20-40%:
-- 单核: 256-512 GFLOPS
-- 38 核 (一个 NUMA): ~10-19 TFLOPS
-- 608 核: ~155-310 TFLOPS
+| 平台 | 配置 | custom_0 GFLOPS | 加速比 |
+|------|------|:---:|:---:|
+| M4 (1 核, OpenBLAS) | Nf=8, IS | 13.7 | 1x (基准) |
+| M4 (1 核, OpenBLAS) | Nf=8, IS | 13.7 | 1x |
+| 目标 (1 核, 无优化) | Nf=8, IS, L3=0 | ~15 (估) | ~1x |
+| 目标 (1 核, HBM+WS) | Nf=8, WS, HBM | ~50-100 (估) | 4-7x |
+| 目标 (1 核, SME+HBM) | Nf=16, WS, HBM | ~200-400 (估) | 15-30x |
+| 目标 (38 核, SME+HBM) | Nf=16, WS, HBM | **~6,000+ (6 TFLOPS)** | **440x+** |
 
-### 6.2 对比当前 M4 实测
+### 7.3 全 11 个自定义卷积预估 (单 NUMA, 38 核)
 
-| 平台 | 核心 | 当前 GFLOPS | 预期 GFLOPS | 加速来源 |
-|------|:---:|:---:|:---:|---|
-| M4 (1核, OpenBLAS) | 1 | ~15 | — | 基准 |
-| 目标 (1核, SME) | 1 | — | 256-512 | SME 指令 |
-| 目标 (38核, 1 NUMA) | 38 | — | 5,000-10,000 | 多核并行 |
-| 目标 (608核, 全机) | 608 | — | 80,000-300,000 | 全机并行 |
+| 卷积 | FLOPs | 预计时间 (ms) | 预计 GFLOPS |
+|------|------:|---:|---:|
+| custom_0 (4.25G) | 4.25G | 0.7 | 6,071 |
+| custom_1 (67.95G) | 67.95G | 11.2 | 6,067 |
+| custom_4 (67.95G) | 67.95G | 11.2 | 6,067 |
+| custom_7 (1.06G) | 1.06G | 0.17 | 6,235 |
+| ... | ... | ... | ~6,000 |
 
-> 注: 实际加速受限于 DRAM 带宽、打包开销、NUMA 延迟等, 上述为理论上限。
+> 全部 11 个卷积: 预计总时间 ~45 秒 (38 核并行)
+> (vs M4 单核 baseline 352 秒 → SConv+BLAS 4.4 秒)
+
+### 7.4 优化实施路线图
+
+| 步骤 | 改动 | 单核加速 | 累计 | 说明 |
+|------|------|:---:|:---:|------|
+| 0 | CSA L3=0 修复 (已完成) | — | — | 防止死循环 |
+| 1 | 设置 HBM 参数 (L3=4G, latency=120) | ~2x | 2x | K3 从 1→256, 全部 tile 缓存 |
+| 2 | WS 调度 (L2 放输入) | ~1.5x | 3x | L2 利用率 3%→23% |
+| 3 | Nf=16 SME 全 tile | ~2x | 6x | 256 FMA/cycle vs 128 |
+| 4 | 38 核 OpenMP 并行 | ~30x | 180x | 空间 tile 级并行 |
+| 5 | memkind HBM 数据分配 | ~1.5x | 270x | HBM 带宽 123x DDR |
+| 6 | ping-pong (L2↔HBM) | ~1.4x | 380x | 隐藏打包访存 |
+| 7 | SVE 向量化打包 | ~1.5x | 570x | 打包加速 |
+
+**理论极限**: 15 GFLOPS (M4 基准) × 570x ≈ **8.5 TFLOPS** (单 NUMA)
+实际可能 50-70% 效率: **4-6 TFLOPS** (单 NUMA)
 
 ---
 
-## 7. 实施路线图
+## 8. 实施清单
 
-| 步骤 | 改动 | 预期单核加速 | 累计 |
-|------|------|:---:|:---:|
-| 1. 修复 CSA (L3=0) | 已完成 | — | — |
-| 2. 设置正确 arch_info | 参数调整 | ~2x (L2 利用) | 2x |
-| 3. Nf=16 + SME 微内核 | vector.contract → arm_sme | 10-20x | 20-40x |
-| 4. 38 核并行 | scf.parallel / OpenMP | ~30x | 600-1200x |
-| 5. 16 NUMA 分区 | numactl + 数据分布 | ~10x | 6000-12000x |
-| 6. 向量化打包 + ping-pong | SVE + double buffer | 1.5x | 9000-18000x |
-
-从当前 M4 单核 15 GFLOPS → 目标全机 **90-180 TFLOPS** (理论上限)。
+```
+[已完成] CSA 代码: cache_size=0 守卫 (防死循环)
+[待做]   CSA 代码: 代价模型 L3→mem 归并 (当 L3_size<HBM 时)
+[待做]   代码:    修改 SConv.cpp 默认 arch_info (HBM 参数)
+[待做]   代码:    修改 mK_info 默认为 {16,16,256} (SME 全 tile)
+[待做]   运行时:  编译 memkind/hbw 库, 集成到 sgemm_blas_kernel.c
+[待做]   运行时:  实现 ping-pong 双缓冲 (L2↔HBM)
+[待做]   并行:    scf.for → scf.parallel (38 核空间并行)
+[待做]   SME:     vector.contract → arm_sme.fmopa lowering
+[待做]   打包:    SVE 向量化 (tensor.extract → vector.transfer_read + shuffle)
+[待做]   部署:    numactl --cpunodebind + membind 绑定
+```
