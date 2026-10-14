@@ -1,307 +1,293 @@
 ; ModuleID = 'LLVMDialectModule'
 source_filename = "LLVMDialectModule"
 
-define void @sconv_sme_direct(i64 %0, i64 %1, i64 %2, i64 %3, i64 %4, i64 %5, ptr %6, ptr %7, i64 %8, i64 %9, i64 %10, i64 %11, i64 %12, ptr %13, ptr %14, i64 %15, i64 %16, i64 %17, ptr %18, ptr %19, i64 %20, i64 %21, i64 %22, i64 %23, i64 %24) #0 {
-  %26 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } undef, ptr %18, 0
-  %27 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %26, ptr %19, 1
-  %28 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %27, i64 %20, 2
-  %29 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %28, i64 %21, 3, 0
-  %30 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %29, i64 %23, 4, 0
-  %31 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %30, i64 %22, 3, 1
-  %32 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %31, i64 %24, 4, 1
-  %33 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } undef, ptr %13, 0
-  %34 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %33, ptr %14, 1
-  %35 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %34, i64 %15, 2
-  %36 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %35, i64 %16, 3, 0
-  %37 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %36, i64 %17, 4, 0
-  %38 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } undef, ptr %6, 0
-  %39 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %38, ptr %7, 1
-  %40 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %39, i64 %8, 2
-  %41 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, i64 %9, 3, 0
-  %42 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %41, i64 %11, 4, 0
-  %43 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %42, i64 %10, 3, 1
-  %44 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %43, i64 %12, 4, 1
-  %45 = call i64 @llvm.aarch64.sme.cntsw()
-  %46 = sdiv i64 %3, %45
-  br label %47
+define void @sconv_sme_direct(i64 %0, i64 %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6, i64 %7, ptr %8, ptr %9, i64 %10, i64 %11, i64 %12, i64 %13, i64 %14, ptr %15, ptr %16, i64 %17, i64 %18, i64 %19, ptr %20, ptr %21, i64 %22, i64 %23, i64 %24, i64 %25, i64 %26) #0 {
+  %28 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } undef, ptr %20, 0
+  %29 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %28, ptr %21, 1
+  %30 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %29, i64 %22, 2
+  %31 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %30, i64 %23, 3, 0
+  %32 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %31, i64 %25, 4, 0
+  %33 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, i64 %24, 3, 1
+  %34 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %33, i64 %26, 4, 1
+  %35 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } undef, ptr %15, 0
+  %36 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %35, ptr %16, 1
+  %37 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %36, i64 %17, 2
+  %38 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %37, i64 %18, 3, 0
+  %39 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, i64 %19, 4, 0
+  %40 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } undef, ptr %8, 0
+  %41 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, ptr %9, 1
+  %42 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %41, i64 %10, 2
+  %43 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %42, i64 %11, 3, 0
+  %44 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %43, i64 %13, 4, 0
+  %45 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, i64 %12, 3, 1
+  %46 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %45, i64 %14, 4, 1
+  %47 = call i64 @llvm.aarch64.sme.cntsw()
+  %48 = sdiv i64 %3, %47
+  %49 = sdiv i64 %4, 4
+  %50 = add i64 %6, %7
+  br label %51
 
-47:                                               ; preds = %245, %25
-  %48 = phi i64 [ %246, %245 ], [ 0, %25 ]
-  %49 = icmp slt i64 %48, %0
-  br i1 %49, label %50, label %247
+51:                                               ; preds = %243, %27
+  %52 = phi i64 [ %244, %243 ], [ %6, %27 ]
+  %53 = icmp slt i64 %52, %50
+  br i1 %53, label %54, label %245
 
-50:                                               ; preds = %47
-  %51 = mul i64 %48, %1
-  %52 = mul i64 %48, %3
-  br label %53
+54:                                               ; preds = %51
+  %55 = srem i64 %52, %49
+  %56 = sdiv i64 %52, %49
+  %57 = srem i64 %56, %48
+  %58 = sdiv i64 %56, %48
+  %59 = mul i64 %55, 4
+  %60 = mul i64 %58, %1
+  %61 = mul i64 %58, %3
+  %62 = mul i64 %57, %47
+  %63 = add i64 %61, %62
+  br label %64
 
-53:                                               ; preds = %243, %50
-  %54 = phi i64 [ %244, %243 ], [ 0, %50 ]
-  %55 = icmp slt i64 %54, %46
-  br i1 %55, label %56, label %245
+64:                                               ; preds = %241, %54
+  %65 = phi i64 [ %242, %241 ], [ 0, %54 ]
+  %66 = icmp slt i64 %65, %5
+  br i1 %66, label %67, label %243
 
-56:                                               ; preds = %53
-  %57 = mul i64 %54, %45
-  %58 = add i64 %52, %57
-  br label %59
-
-59:                                               ; preds = %241, %56
-  %60 = phi i64 [ %242, %241 ], [ 0, %56 ]
-  %61 = icmp slt i64 %60, %4
-  br i1 %61, label %62, label %243
-
-62:                                               ; preds = %239, %59
-  %63 = phi i64 [ %240, %239 ], [ 0, %59 ]
-  %64 = icmp slt i64 %63, %5
-  br i1 %64, label %65, label %241
-
-65:                                               ; preds = %62
+67:                                               ; preds = %64
   call void @llvm.aarch64.sme.zero(i32 17)
   call void @llvm.aarch64.sme.zero(i32 34)
   call void @llvm.aarch64.sme.zero(i32 68)
   call void @llvm.aarch64.sme.zero(i32 136)
-  br label %66
+  br label %68
 
-66:                                               ; preds = %178, %65
-  %67 = phi i64 [ %179, %178 ], [ 0, %65 ]
-  %68 = icmp slt i64 %67, %1
-  br i1 %68, label %69, label %180
+68:                                               ; preds = %180, %67
+  %69 = phi i64 [ %181, %180 ], [ 0, %67 ]
+  %70 = icmp slt i64 %69, %1
+  br i1 %70, label %71, label %182
 
-69:                                               ; preds = %66
-  %70 = add i64 %51, %67
-  %71 = mul i64 %67, 9
-  br label %72
+71:                                               ; preds = %68
+  %72 = add i64 %60, %69
+  %73 = mul i64 %69, 9
+  br label %74
 
-72:                                               ; preds = %75, %69
-  %73 = phi i64 [ %177, %75 ], [ 0, %69 ]
-  %74 = icmp slt i64 %73, 3
-  br i1 %74, label %75, label %178
+74:                                               ; preds = %77, %71
+  %75 = phi i64 [ %179, %77 ], [ 0, %71 ]
+  %76 = icmp slt i64 %75, 3
+  br i1 %76, label %77, label %180
 
-75:                                               ; preds = %72
-  %76 = mul i64 %73, 3
-  %77 = add i64 %71, %76
-  %78 = mul i64 %77, %3
-  %79 = add i64 %78, %57
-  %80 = add i64 %79, %3
-  %81 = add i64 %80, %3
-  %82 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %37, 1
-  %83 = getelementptr float, ptr %82, i64 %79
-  %84 = load <vscale x 4 x float>, ptr %83, align 4
-  %85 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %37, 1
-  %86 = getelementptr float, ptr %85, i64 %80
-  %87 = load <vscale x 4 x float>, ptr %86, align 4
-  %88 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %37, 1
-  %89 = getelementptr float, ptr %88, i64 %81
-  %90 = load <vscale x 4 x float>, ptr %89, align 4
-  %91 = add i64 %60, %73
-  %92 = mul i64 %91, %2
-  %93 = add i64 %92, %63
-  %94 = add i64 %93, %2
-  %95 = add i64 %94, %2
+77:                                               ; preds = %74
+  %78 = mul i64 %75, 3
+  %79 = add i64 %73, %78
+  %80 = mul i64 %79, %3
+  %81 = add i64 %80, %62
+  %82 = add i64 %81, %3
+  %83 = add i64 %82, %3
+  %84 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %39, 1
+  %85 = getelementptr float, ptr %84, i64 %81
+  %86 = load <vscale x 4 x float>, ptr %85, align 4
+  %87 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %39, 1
+  %88 = getelementptr float, ptr %87, i64 %82
+  %89 = load <vscale x 4 x float>, ptr %88, align 4
+  %90 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %39, 1
+  %91 = getelementptr float, ptr %90, i64 %83
+  %92 = load <vscale x 4 x float>, ptr %91, align 4
+  %93 = add i64 %59, %75
+  %94 = mul i64 %93, %2
+  %95 = add i64 %94, %65
   %96 = add i64 %95, %2
-  %97 = add i64 %93, 1
-  %98 = add i64 %93, 2
-  %99 = add i64 %94, 1
-  %100 = add i64 %94, 2
-  %101 = add i64 %95, 1
-  %102 = add i64 %95, 2
-  %103 = add i64 %96, 1
-  %104 = add i64 %96, 2
-  %105 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %106 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %107 = mul i64 %70, %106
-  %108 = add i64 %107, %93
-  %109 = getelementptr float, ptr %105, i64 %108
-  %110 = load <vscale x 4 x float>, ptr %109, align 4
-  %111 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %112 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %113 = mul i64 %70, %112
-  %114 = add i64 %113, %97
-  %115 = getelementptr float, ptr %111, i64 %114
-  %116 = load <vscale x 4 x float>, ptr %115, align 4
-  %117 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %118 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %119 = mul i64 %70, %118
-  %120 = add i64 %119, %98
-  %121 = getelementptr float, ptr %117, i64 %120
-  %122 = load <vscale x 4 x float>, ptr %121, align 4
-  %123 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %124 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %125 = mul i64 %70, %124
-  %126 = add i64 %125, %94
-  %127 = getelementptr float, ptr %123, i64 %126
-  %128 = load <vscale x 4 x float>, ptr %127, align 4
-  %129 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %130 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %131 = mul i64 %70, %130
-  %132 = add i64 %131, %99
-  %133 = getelementptr float, ptr %129, i64 %132
-  %134 = load <vscale x 4 x float>, ptr %133, align 4
-  %135 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %136 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %137 = mul i64 %70, %136
-  %138 = add i64 %137, %100
-  %139 = getelementptr float, ptr %135, i64 %138
-  %140 = load <vscale x 4 x float>, ptr %139, align 4
-  %141 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %142 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %143 = mul i64 %70, %142
-  %144 = add i64 %143, %95
-  %145 = getelementptr float, ptr %141, i64 %144
-  %146 = load <vscale x 4 x float>, ptr %145, align 4
-  %147 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %148 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %149 = mul i64 %70, %148
-  %150 = add i64 %149, %101
-  %151 = getelementptr float, ptr %147, i64 %150
-  %152 = load <vscale x 4 x float>, ptr %151, align 4
-  %153 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %154 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %155 = mul i64 %70, %154
-  %156 = add i64 %155, %102
-  %157 = getelementptr float, ptr %153, i64 %156
-  %158 = load <vscale x 4 x float>, ptr %157, align 4
-  %159 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %160 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %161 = mul i64 %70, %160
-  %162 = add i64 %161, %96
-  %163 = getelementptr float, ptr %159, i64 %162
-  %164 = load <vscale x 4 x float>, ptr %163, align 4
-  %165 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %166 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %167 = mul i64 %70, %166
-  %168 = add i64 %167, %103
-  %169 = getelementptr float, ptr %165, i64 %168
-  %170 = load <vscale x 4 x float>, ptr %169, align 4
-  %171 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 1
-  %172 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, 4, 0
-  %173 = mul i64 %70, %172
-  %174 = add i64 %173, %104
-  %175 = getelementptr float, ptr %171, i64 %174
-  %176 = load <vscale x 4 x float>, ptr %175, align 4
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 1, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %84, <vscale x 4 x float> %110)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 1, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %87, <vscale x 4 x float> %116)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 1, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %90, <vscale x 4 x float> %122)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 2, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %84, <vscale x 4 x float> %128)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 2, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %87, <vscale x 4 x float> %134)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 2, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %90, <vscale x 4 x float> %140)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 3, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %84, <vscale x 4 x float> %146)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 3, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %87, <vscale x 4 x float> %152)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 3, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %90, <vscale x 4 x float> %158)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 0, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %84, <vscale x 4 x float> %164)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 0, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %87, <vscale x 4 x float> %170)
-  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 0, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %90, <vscale x 4 x float> %176)
-  %177 = add i64 %73, 1
-  br label %72
+  %97 = add i64 %96, %2
+  %98 = add i64 %97, %2
+  %99 = add i64 %95, 1
+  %100 = add i64 %95, 2
+  %101 = add i64 %96, 1
+  %102 = add i64 %96, 2
+  %103 = add i64 %97, 1
+  %104 = add i64 %97, 2
+  %105 = add i64 %98, 1
+  %106 = add i64 %98, 2
+  %107 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %108 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %109 = mul i64 %72, %108
+  %110 = add i64 %109, %95
+  %111 = getelementptr float, ptr %107, i64 %110
+  %112 = load <vscale x 4 x float>, ptr %111, align 4
+  %113 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %114 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %115 = mul i64 %72, %114
+  %116 = add i64 %115, %99
+  %117 = getelementptr float, ptr %113, i64 %116
+  %118 = load <vscale x 4 x float>, ptr %117, align 4
+  %119 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %120 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %121 = mul i64 %72, %120
+  %122 = add i64 %121, %100
+  %123 = getelementptr float, ptr %119, i64 %122
+  %124 = load <vscale x 4 x float>, ptr %123, align 4
+  %125 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %126 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %127 = mul i64 %72, %126
+  %128 = add i64 %127, %96
+  %129 = getelementptr float, ptr %125, i64 %128
+  %130 = load <vscale x 4 x float>, ptr %129, align 4
+  %131 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %132 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %133 = mul i64 %72, %132
+  %134 = add i64 %133, %101
+  %135 = getelementptr float, ptr %131, i64 %134
+  %136 = load <vscale x 4 x float>, ptr %135, align 4
+  %137 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %138 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %139 = mul i64 %72, %138
+  %140 = add i64 %139, %102
+  %141 = getelementptr float, ptr %137, i64 %140
+  %142 = load <vscale x 4 x float>, ptr %141, align 4
+  %143 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %144 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %145 = mul i64 %72, %144
+  %146 = add i64 %145, %97
+  %147 = getelementptr float, ptr %143, i64 %146
+  %148 = load <vscale x 4 x float>, ptr %147, align 4
+  %149 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %150 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %151 = mul i64 %72, %150
+  %152 = add i64 %151, %103
+  %153 = getelementptr float, ptr %149, i64 %152
+  %154 = load <vscale x 4 x float>, ptr %153, align 4
+  %155 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %156 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %157 = mul i64 %72, %156
+  %158 = add i64 %157, %104
+  %159 = getelementptr float, ptr %155, i64 %158
+  %160 = load <vscale x 4 x float>, ptr %159, align 4
+  %161 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %162 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %163 = mul i64 %72, %162
+  %164 = add i64 %163, %98
+  %165 = getelementptr float, ptr %161, i64 %164
+  %166 = load <vscale x 4 x float>, ptr %165, align 4
+  %167 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %168 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %169 = mul i64 %72, %168
+  %170 = add i64 %169, %105
+  %171 = getelementptr float, ptr %167, i64 %170
+  %172 = load <vscale x 4 x float>, ptr %171, align 4
+  %173 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 1
+  %174 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, 4, 0
+  %175 = mul i64 %72, %174
+  %176 = add i64 %175, %106
+  %177 = getelementptr float, ptr %173, i64 %176
+  %178 = load <vscale x 4 x float>, ptr %177, align 4
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 1, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %86, <vscale x 4 x float> %112)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 1, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %89, <vscale x 4 x float> %118)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 1, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %92, <vscale x 4 x float> %124)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 2, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %86, <vscale x 4 x float> %130)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 2, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %89, <vscale x 4 x float> %136)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 2, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %92, <vscale x 4 x float> %142)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 3, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %86, <vscale x 4 x float> %148)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 3, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %89, <vscale x 4 x float> %154)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 3, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %92, <vscale x 4 x float> %160)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 0, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %86, <vscale x 4 x float> %166)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 0, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %89, <vscale x 4 x float> %172)
+  call void @llvm.aarch64.sme.mopa.nxv4f32(i32 0, <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), <vscale x 4 x float> %92, <vscale x 4 x float> %178)
+  %179 = add i64 %75, 1
+  br label %74
 
-178:                                              ; preds = %72
-  %179 = add i64 %67, 1
-  br label %66
+180:                                              ; preds = %74
+  %181 = add i64 %69, 1
+  br label %68
 
-180:                                              ; preds = %66
-  %181 = mul i64 %60, %5
-  %182 = add i64 %181, %63
-  %183 = add i64 %182, %5
-  %184 = add i64 %183, %5
+182:                                              ; preds = %68
+  %183 = mul i64 %59, %5
+  %184 = add i64 %183, %65
   %185 = add i64 %184, %5
-  %186 = call i64 @llvm.vscale.i64()
-  %187 = mul i64 %186, 4
-  br label %188
+  %186 = add i64 %185, %5
+  %187 = add i64 %186, %5
+  %188 = call i64 @llvm.vscale.i64()
+  %189 = mul i64 %188, 4
+  br label %190
 
-188:                                              ; preds = %191, %180
-  %189 = phi i64 [ %199, %191 ], [ 0, %180 ]
-  %190 = icmp slt i64 %189, %187
-  br i1 %190, label %191, label %200
+190:                                              ; preds = %193, %182
+  %191 = phi i64 [ %201, %193 ], [ 0, %182 ]
+  %192 = icmp slt i64 %191, %189
+  br i1 %192, label %193, label %202
 
-191:                                              ; preds = %188
-  %192 = add i64 %58, %189
-  %193 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, 1
-  %194 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, 4, 0
-  %195 = mul i64 %192, %194
-  %196 = add i64 %195, %182
-  %197 = getelementptr float, ptr %193, i64 %196
-  %198 = trunc i64 %189 to i32
-  call void @llvm.aarch64.sme.st1w.horiz(<vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), ptr %197, i32 1, i32 %198)
-  %199 = add i64 %189, 1
-  br label %188
+193:                                              ; preds = %190
+  %194 = add i64 %63, %191
+  %195 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, 1
+  %196 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, 4, 0
+  %197 = mul i64 %194, %196
+  %198 = add i64 %197, %184
+  %199 = getelementptr float, ptr %195, i64 %198
+  %200 = trunc i64 %191 to i32
+  call void @llvm.aarch64.sme.st1w.horiz(<vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), ptr %199, i32 1, i32 %200)
+  %201 = add i64 %191, 1
+  br label %190
 
-200:                                              ; preds = %188
-  br label %201
+202:                                              ; preds = %190
+  br label %203
 
-201:                                              ; preds = %204, %200
-  %202 = phi i64 [ %212, %204 ], [ 0, %200 ]
-  %203 = icmp slt i64 %202, %187
-  br i1 %203, label %204, label %213
+203:                                              ; preds = %206, %202
+  %204 = phi i64 [ %214, %206 ], [ 0, %202 ]
+  %205 = icmp slt i64 %204, %189
+  br i1 %205, label %206, label %215
 
-204:                                              ; preds = %201
-  %205 = add i64 %58, %202
-  %206 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, 1
-  %207 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, 4, 0
-  %208 = mul i64 %205, %207
-  %209 = add i64 %208, %183
-  %210 = getelementptr float, ptr %206, i64 %209
-  %211 = trunc i64 %202 to i32
-  call void @llvm.aarch64.sme.st1w.horiz(<vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), ptr %210, i32 2, i32 %211)
-  %212 = add i64 %202, 1
-  br label %201
+206:                                              ; preds = %203
+  %207 = add i64 %63, %204
+  %208 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, 1
+  %209 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, 4, 0
+  %210 = mul i64 %207, %209
+  %211 = add i64 %210, %185
+  %212 = getelementptr float, ptr %208, i64 %211
+  %213 = trunc i64 %204 to i32
+  call void @llvm.aarch64.sme.st1w.horiz(<vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), ptr %212, i32 2, i32 %213)
+  %214 = add i64 %204, 1
+  br label %203
 
-213:                                              ; preds = %201
-  br label %214
+215:                                              ; preds = %203
+  br label %216
 
-214:                                              ; preds = %217, %213
-  %215 = phi i64 [ %225, %217 ], [ 0, %213 ]
-  %216 = icmp slt i64 %215, %187
-  br i1 %216, label %217, label %226
+216:                                              ; preds = %219, %215
+  %217 = phi i64 [ %227, %219 ], [ 0, %215 ]
+  %218 = icmp slt i64 %217, %189
+  br i1 %218, label %219, label %228
 
-217:                                              ; preds = %214
-  %218 = add i64 %58, %215
-  %219 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, 1
-  %220 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, 4, 0
-  %221 = mul i64 %218, %220
-  %222 = add i64 %221, %184
-  %223 = getelementptr float, ptr %219, i64 %222
-  %224 = trunc i64 %215 to i32
-  call void @llvm.aarch64.sme.st1w.horiz(<vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), ptr %223, i32 3, i32 %224)
-  %225 = add i64 %215, 1
-  br label %214
+219:                                              ; preds = %216
+  %220 = add i64 %63, %217
+  %221 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, 1
+  %222 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, 4, 0
+  %223 = mul i64 %220, %222
+  %224 = add i64 %223, %186
+  %225 = getelementptr float, ptr %221, i64 %224
+  %226 = trunc i64 %217 to i32
+  call void @llvm.aarch64.sme.st1w.horiz(<vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), ptr %225, i32 3, i32 %226)
+  %227 = add i64 %217, 1
+  br label %216
 
-226:                                              ; preds = %214
-  br label %227
+228:                                              ; preds = %216
+  br label %229
 
-227:                                              ; preds = %230, %226
-  %228 = phi i64 [ %238, %230 ], [ 0, %226 ]
-  %229 = icmp slt i64 %228, %187
-  br i1 %229, label %230, label %239
+229:                                              ; preds = %232, %228
+  %230 = phi i64 [ %240, %232 ], [ 0, %228 ]
+  %231 = icmp slt i64 %230, %189
+  br i1 %231, label %232, label %241
 
-230:                                              ; preds = %227
-  %231 = add i64 %58, %228
-  %232 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, 1
-  %233 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, 4, 0
-  %234 = mul i64 %231, %233
-  %235 = add i64 %234, %185
-  %236 = getelementptr float, ptr %232, i64 %235
-  %237 = trunc i64 %228 to i32
-  call void @llvm.aarch64.sme.st1w.horiz(<vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), ptr %236, i32 0, i32 %237)
-  %238 = add i64 %228, 1
-  br label %227
+232:                                              ; preds = %229
+  %233 = add i64 %63, %230
+  %234 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, 1
+  %235 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, 4, 0
+  %236 = mul i64 %233, %235
+  %237 = add i64 %236, %187
+  %238 = getelementptr float, ptr %234, i64 %237
+  %239 = trunc i64 %230 to i32
+  call void @llvm.aarch64.sme.st1w.horiz(<vscale x 4 x i1> shufflevector (<vscale x 4 x i1> insertelement (<vscale x 4 x i1> poison, i1 true, i64 0), <vscale x 4 x i1> poison, <vscale x 4 x i32> zeroinitializer), ptr %238, i32 0, i32 %239)
+  %240 = add i64 %230, 1
+  br label %229
 
-239:                                              ; preds = %227
-  %240 = add i64 %63, %45
-  br label %62
+241:                                              ; preds = %229
+  %242 = add i64 %65, %47
+  br label %64
 
-241:                                              ; preds = %62
-  %242 = add i64 %60, 4
-  br label %59
+243:                                              ; preds = %64
+  %244 = add i64 %52, 1
+  br label %51
 
-243:                                              ; preds = %59
-  %244 = add i64 %54, 1
-  br label %53
-
-245:                                              ; preds = %53
-  %246 = add i64 %48, 1
-  br label %47
-
-247:                                              ; preds = %47
+245:                                              ; preds = %51
   ret void
 }
 
