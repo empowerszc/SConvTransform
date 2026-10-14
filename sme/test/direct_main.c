@@ -1,76 +1,105 @@
 #include "harness.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
-/* Block under test: one ocb (16 oc) x one output row, columns 0..63, stride1,
-   SAME padding (ph=pw=1). The driver PRE-PADS the input into [Ic][Ih+2][Iw+2]
-   (spec §5.5 fallback), so the kernel indexes the padded buffer directly with
-   no out-of-range access: padded row = oh+kh, padded col = col+kw.
-   in:    [Ic][Ih+2][Iw+2]  (rank-3, pre-padded)
-   wpack: [(Ic*9)][16]      (rank-1)
-   out:   [16][64]          (rank-2) */
-extern void sme_block1(
-    float *, float *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
+/* Full direct conv: stride1, 3x3, SAME pad, pre-padded I/O.
+   The kernel works on pre-padded buffers (driver pads here); R is the streaming
+   vector length. On this machine SVL=512 -> R=16 (confirmed). */
+extern void sconv_sme_direct(
+    int64_t N, int64_t Ic, int64_t IwP, int64_t OcP, int64_t OhP, int64_t OwP,
+    float *, float *, int64_t, int64_t, int64_t, int64_t, int64_t,
     float *, float *, int64_t, int64_t, int64_t,
     float *, float *, int64_t, int64_t, int64_t, int64_t, int64_t);
 
-#define IC 2
-#define IH 4
-#define IW 80
-#define OC 16
-#define OCOLS 64
-#define PH 1
-#define PW 1
+#define R 16
 
-int main(void) {
-  static float in[IC * IH * IW];
-  static float pin[IC * (IH + 2) * (IW + 2)];
-  static float wpack[IC * 9 * 16];
-  static float out[OC * OCOLS];
-  static float ref[OC * OCOLS];
-  const int PHIW = IW + 2;
-  const int PHIH = IH + 2;
+static int run_shape(int N, int Ic, int Ih, int Iw, int Oc, int Oh, int Ow) {
+  int OhP = (Oh + 3) / 4 * 4;
+  int OwP = (Ow + R - 1) / R * R;
+  int OcP = (Oc + R - 1) / R * R;
+  int IhP = OhP + 2;
+  int IwP = OwP + 2;
 
-  for (int i = 0; i < IC * IH * IW; i++) in[i] = 0.5f * (float)((i % 37) - 18);
-  for (int i = 0; i < IC * 9 * 16; i++) wpack[i] = 0.25f * (float)((i % 11) - 5);
-  for (int i = 0; i < OC * OCOLS; i++) out[i] = -1.0f;
+  float *in   = malloc(sizeof(float) * (size_t)N * Ic * Ih * Iw);
+  float *win  = malloc(sizeof(float) * (size_t)Oc * Ic * 9);
+  float *pin  = calloc((size_t)N * Ic * IhP * IwP, sizeof(float));
+  float *wpack= calloc((size_t)Ic * 9 * OcP, sizeof(float));
+  float *out  = calloc((size_t)N * OcP * OhP * OwP, sizeof(float));
+  float *ref  = malloc(sizeof(float) * (size_t)N * Oc * Oh * Ow);
+  if (!in || !win || !pin || !wpack || !out || !ref) { printf("OOM\n"); exit(2); }
 
-  /* zero-pad into pin[ic][r][c] = in at (r-PH, c-PW) */
-  for (int i = 0; i < IC * PHIH * PHIW; i++) pin[i] = 0.0f;
-  for (int ic = 0; ic < IC; ic++)
-    for (int r = 0; r < IH; r++)
-      for (int c = 0; c < IW; c++)
-        pin[ic * PHIH * PHIW + (r + PH) * PHIW + (c + PW)] = in[ic * IH * IW + r * IW + c];
+  for (size_t i = 0; i < (size_t)N * Ic * Ih * Iw; i++) in[i] = 0.1f * (float)((i % 29) - 13);
+  for (size_t i = 0; i < (size_t)Oc * Ic * 9; i++) win[i] = 0.2f * (float)((i % 17) - 8);
 
-  /* naive reference for output row 0 with SAME pad: padded row = 0+kh */
-  for (int oc = 0; oc < OC; oc++)
-    for (int c = 0; c < OCOLS; c++) {
-      float s = 0;
-      for (int ic = 0; ic < IC; ic++)
-        for (int kh = 0; kh < 3; kh++)
-          for (int kw = 0; kw < 3; kw++) {
-            float x = pin[ic * PHIH * PHIW + kh * PHIW + (c + kw)];
-            float w = wpack[(ic * 9 + kh * 3 + kw) * 16 + oc];
-            s += x * w;
-          }
-      ref[oc * OCOLS + c] = s;
-    }
+  /* pad input: P[n][ic][r][c] = in[n][ic][r-1][c-1] */
+  for (int n = 0; n < N; n++)
+    for (int ic = 0; ic < Ic; ic++)
+      for (int r = 0; r < Ih; r++)
+        for (int c = 0; c < Iw; c++) {
+          size_t pi = ((size_t)(n * Ic + ic) * IhP + (r + 1)) * IwP + (c + 1);
+          pin[pi] = in[((size_t)(n * Ic + ic) * Ih + r) * Iw + c];
+        }
 
-  MemRef3D mp = mk3d(pin, IC, PHIH, PHIW);
-  MemRef1D mw = mk1d(wpack, IC * 9 * 16);
-  MemRef2D mo = mk2d(out, OC, OCOLS);
-  sme_block1(mp.allocated, mp.aligned, mp.offset, mp.size0, mp.size1, mp.size2,
-             mp.stride0, mp.stride1, mp.stride2,
-             mw.allocated, mw.aligned, mw.offset, mw.size, mw.stride,
-             mo.allocated, mo.aligned, mo.offset, mo.size0, mo.size1,
-             mo.stride0, mo.stride1);
+  /* pack weights: wpack[(ic*9+kh*3+kw)*OcP + oc] = win[oc][ic][kh][kw] */
+  for (int ic = 0; ic < Ic; ic++)
+    for (int kh = 0; kh < 3; kh++)
+      for (int kw = 0; kw < 3; kw++)
+        for (int oc = 0; oc < Oc; oc++)
+          wpack[((size_t)(ic * 9 + kh * 3 + kw) * OcP) + oc] =
+              win[(((size_t)oc * Ic + ic) * 3 + kh) * 3 + kw];
+
+  /* naive NCHW reference with SAME pad */
+  for (int n = 0; n < N; n++)
+    for (int oc = 0; oc < Oc; oc++)
+      for (int oh = 0; oh < Oh; oh++)
+        for (int ow = 0; ow < Ow; ow++) {
+          float s = 0;
+          for (int ic = 0; ic < Ic; ic++)
+            for (int kh = 0; kh < 3; kh++)
+              for (int kw = 0; kw < 3; kw++) {
+                int ih = oh + kh - 1, iw = ow + kw - 1;
+                if (ih < 0 || ih >= Ih || iw < 0 || iw >= Iw) continue;
+                float x = in[((size_t)(n * Ic + ic) * Ih + ih) * Iw + iw];
+                float w = win[(((size_t)oc * Ic + ic) * 3 + kh) * 3 + kw];
+                s += x * w;
+              }
+          ref[((size_t)(n * Oc + oc) * Oh + oh) * Ow + ow] = s;
+        }
+
+  MemRef2D min = mk2d(pin, (int64_t)N * Ic, (int64_t)IhP * IwP);
+  MemRef1D mw  = mk1d(wpack, (int64_t)Ic * 9 * OcP);
+  MemRef2D mout = mk2d(out, (int64_t)N * OcP, (int64_t)OhP * OwP);
+  sconv_sme_direct(N, Ic, IwP, OcP, OhP, OwP,
+                   min.allocated, min.aligned, min.offset, min.size0, min.size1, min.stride0, min.stride1,
+                   mw.allocated, mw.aligned, mw.offset, mw.size, mw.stride,
+                   mout.allocated, mout.aligned, mout.offset, mout.size0, mout.size1, mout.stride0, mout.stride1);
 
   int bad = 0;
-  for (int i = 0; i < OC * OCOLS; i++)
-    if (!close_enough(out[i], ref[i])) {
-      if (!bad) printf("first mismatch idx %d got %g want %g\n", i, out[i], ref[i]);
-      bad++;
-    }
-  printf(bad ? "PAD BLOCK FAIL (%d/%d)\n" : "PAD BLOCK PASS\n", bad, OC * OCOLS);
+  for (int n = 0; n < N; n++)
+    for (int oc = 0; oc < Oc; oc++)
+      for (int oh = 0; oh < Oh; oh++)
+        for (int ow = 0; ow < Ow; ow++) {
+          float got = out[((size_t)(n * OcP + oc) * OhP + oh) * OwP + ow];
+          float want = ref[((size_t)(n * Oc + oc) * Oh + oh) * Ow + ow];
+          if (!close_enough(got, want)) {
+            if (!bad) printf("  first mismatch n%d oc%d oh%d ow%d got %g want %g\n",
+                             n, oc, oh, ow, got, want);
+            bad++;
+          }
+        }
+  printf("shape N%d Ic%d %dx%d Oc%d 3x3 SAME: %s (%d bad)\n",
+         N, Ic, Ih, Iw, Oc, bad ? "FAIL" : "PASS", bad);
+
+  free(in); free(win); free(pin); free(wpack); free(out); free(ref);
+  return bad ? 1 : 0;
+}
+
+int main(void) {
+  int bad = 0;
+  bad |= run_shape(1, 2, 8, 8, 16, 8, 8);
+  bad |= run_shape(1, 3, 10, 10, 17, 10, 10);
+  bad |= run_shape(2, 5, 7, 13, 32, 7, 13);
+  printf(bad ? "ALL FAIL\n" : "ALL PASS\n");
   return bad ? 1 : 0;
 }
