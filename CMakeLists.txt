@@ -41,7 +41,7 @@ add_subdirectory(include)
 add_subdirectory(lib)
 
 add_dependencies(SConv sconv-opt)
-add_llvm_executable(sconv-opt
+add_llvm_executable(sconv-opt PARTIAL_SOURCES_INTENDED
   sconv-opt/sconv-opt.cpp)
 
 target_link_libraries(sconv-opt

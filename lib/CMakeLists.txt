@@ -7,6 +7,7 @@ add_mlir_library(
   SConv.cpp
   CSA.cpp
   LowerToBLAS.cpp
+  LowerToSME.cpp
 
   # Make includes visible without top-level path.
   ADDITIONAL_HEADER_DIRS
@@ -21,4 +22,7 @@ add_mlir_library(
   MLIRTransformDialect
   MLIRFuncDialect
   MLIRSCFDialect
+  MLIRLinalgDialect
+  MLIRMemRefDialect
+  MLIRArithDialect
 )

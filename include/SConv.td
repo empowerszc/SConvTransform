@@ -81,4 +81,18 @@ def LowerToBlasOp : Op<Transform_Dialect, "lower.to_blas",
   let hasVerifier = 1;
 }
 
+def LowerToSMEOp : Op<Transform_Dialect, "lower.to_sme",
+    [DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Lower an SME-selected whole conv to the sconv_sme_direct runtime call.";
+  let description = [{}];
+  let arguments = (ins
+    StrAttr:$name,
+    TransformHandleTypeInterface:$target
+  );
+  let results = (outs TransformHandleTypeInterface:$output);
+  let assemblyFormat = "$name `,` $target attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
 #endif // SCONV
