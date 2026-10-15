@@ -13,6 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 #include <cassert>
+#include <cmath>
+#include <optional>
 
 #include "SConv.h"
 #include <llvm/ADT/Twine.h>
@@ -37,10 +39,87 @@ using namespace mlir::transform;
 using LLVMCallOp = LLVM::CallOp;
 
 //===----------------------------------------------------------------------===//
+// SME selection cost model
+//===----------------------------------------------------------------------===//
+//
+// Coefficients calibrated on this machine (Kunpeng 0xd22, SVL=512) from
+// 38-thread, node-0 measurements of `sme/test/direct_main.c bench` (SME) and
+// `native_impl` (GEMM). See docs/superpowers/specs/2026-10-15-sme-integration-design.md.
+//
+//   GEMM peak  ~ 2.0e12 flop/s  (best GEMM across custom_* configs)
+//   SME  peak  ~ 2.85e12 flop/s  (custom_9, 38 threads)
+//   DRAM BW    ~ 3.5e10 B/s      (achieved streaming bandwidth)
+//
+// Calibration target (ConvBench custom_*): custom_9 & custom_10 -> SME,
+// custom_0/2/5/7 -> GEMM (custom_1/3/4/6/8 are stride-2, ineligible).
+static constexpr double kGemmPeak = 2.0e12;
+static constexpr double kSmePeak = 2.85e12;
+static constexpr double kBandwidth = 3.5e10;
+
+// Defaults for the `min_ic` / `max_oc` gates (see SMESelectOp::apply).
+static constexpr int64_t kDefaultMinIc = 384;
+static constexpr int64_t kDefaultMaxOc = 96;
+
+//===----------------------------------------------------------------------===//
 // Lowering to SME
 //===----------------------------------------------------------------------===//
 
 namespace {
+
+/// Static problem geometry of a conv that the SME direct kernel can handle.
+struct SmeGeom {
+  int64_t N, Ic, Ih, Iw, Oc, Oh, Ow;
+};
+
+/// Return the geometry if `c` is a 3x3, stride-1, unit-dilation conv whose
+/// (framework pre-padded) input is exactly `Oh+2 x Ow+2` and all shapes are
+/// static; otherwise `std::nullopt` (i.e. the conv is not an SME candidate).
+static std::optional<SmeGeom> eligible(Conv2DNchwFchwOp c) {
+  SmallVector<int64_t, 2> dilations =
+      llvm::to_vector(c.getDilations().getValues<int64_t>());
+  SmallVector<int64_t, 2> strides =
+      llvm::to_vector(c.getStrides().getValues<int64_t>());
+  if (dilations[0] != 1 || dilations[1] != 1 || strides[0] != 1 ||
+      strides[1] != 1)
+    return std::nullopt;
+
+  auto inTy = cast<ShapedType>(c.getInputs()[0].getType());
+  auto fTy = cast<ShapedType>(c.getInputs()[1].getType());
+  auto outTy = cast<ShapedType>(c.getOutputs()[0].getType());
+  if (!inTy.hasStaticShape() || !fTy.hasStaticShape() ||
+      !outTy.hasStaticShape())
+    return std::nullopt;
+  if (fTy.getDimSize(2) != 3 || fTy.getDimSize(3) != 3)
+    return std::nullopt;
+
+  int64_t N = inTy.getDimSize(0), Ic = inTy.getDimSize(1),
+          Ih = inTy.getDimSize(2), Iw = inTy.getDimSize(3);
+  int64_t Oc = fTy.getDimSize(0), Oh = outTy.getDimSize(2),
+          Ow = outTy.getDimSize(3);
+  if (Ih != Oh + 2 || Iw != Ow + 2)
+    return std::nullopt;
+  return SmeGeom{N, Ic, Ih, Iw, Oc, Oh, Ow};
+}
+
+/// Estimated GEMM-path time (arbitrary units): the matmul plus the im2col-style
+/// input packing that the GEMM path pays to lay out the A matrix.
+static double fGemm(const SmeGeom &g) {
+  double flops = 2.0 * g.N * g.Oh * g.Ow * g.Oc * g.Ic * 9;
+  double pack = (double)g.N * g.Oh * g.Ow * g.Ic * 9;
+  return flops / kGemmPeak + pack * 4.0 / kBandwidth;
+}
+
+/// Estimated SME-path time (arbitrary units): the matmul (with padded-M/N waste)
+/// plus the input traffic re-read once per 16-row output-channel block.
+static double fSme(const SmeGeom &g) {
+  double OhP = std::ceil(g.Oh / 4.0) * 4;
+  double OwP = std::ceil(g.Ow / 16.0) * 16;
+  double waste = (OhP * OwP) / (double)(g.Oh * g.Ow);
+  double flops = 2.0 * g.N * g.Oh * g.Ow * g.Oc * g.Ic * 9;
+  double Ocb = (double)((g.Oc + 15) / 16);
+  double traffic = (double)g.N * g.Ic * g.Ih * g.Iw * Ocb;
+  return waste * flops / kSmePeak + traffic * 4.0 / kBandwidth;
+}
 
 /// Create a LLVM function declaration for the SME direct-conv shim. The
 /// function has the following signature:
@@ -205,3 +284,50 @@ LogicalResult LowerToSMEOp::verify() {
     return emitOpError("expected non-empty kernel name");
   return success();
 }
+
+DiagnosedSilenceableFailure SMESelectOp::apply(TransformRewriter &rewriter,
+                                               TransformResults &results,
+                                               TransformState &state) {
+  SmallVector<Operation *, 8> remaining;
+
+  int64_t minIc = kDefaultMinIc;
+  if (auto attr = getMinIcAttr())
+    minIc = attr.getInt();
+  int64_t maxOc = kDefaultMaxOc;
+  if (auto attr = getMaxOcAttr())
+    maxOc = attr.getInt();
+  bool force = getForce();
+
+  for (Operation *targetOp : state.getPayloadOps(getTarget())) {
+    auto conv = dyn_cast<Conv2DNchwFchwOp>(targetOp);
+    if (!conv) {
+      remaining.push_back(targetOp);
+      continue;
+    }
+
+    auto geom = eligible(conv);
+    if (!geom) {
+      remaining.push_back(targetOp);
+      continue;
+    }
+
+    bool pick = force || (geom->Ic >= minIc && geom->Oc <= maxOc &&
+                          fSme(*geom) < fGemm(*geom));
+    if (pick)
+      conv->setAttr("sme.direct", rewriter.getUnitAttr());
+    else
+      remaining.push_back(targetOp);
+  }
+
+  results.set((*this)->getOpResult(0), remaining);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void SMESelectOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getTargetMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+LogicalResult SMESelectOp::verify() { return success(); }

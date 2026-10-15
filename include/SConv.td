@@ -95,4 +95,27 @@ def LowerToSMEOp : Op<Transform_Dialect, "lower.to_sme",
   let hasVerifier = 1;
 }
 
+def SMESelectOp : Op<Transform_Dialect, "lower.sme_select",
+    [DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Tag conv ops that should take the SME direct path.";
+  let description = [{
+    Upon each `linalg.conv_2d_nchw_fchw` in `target`, decides whether the SME
+    direct kernel should handle it (static 3x3, stride 1, unit dilation,
+    pre-padded input `Ih==Oh+2 && Iw==Ow+2`) and, if so, whether the calibrated
+    cost model plus the `min_ic`/`max_oc` gates prefer SME over GEMM. Selected
+    convs get the `sme.direct` marker attribute. Returns the handle of the
+    convs that were NOT selected (the GEMM remainder).
+  }];
+  let arguments = (ins
+    TransformHandleTypeInterface:$target,
+    UnitAttr:$force,
+    OptionalAttr<I64Attr>:$min_ic,
+    OptionalAttr<I64Attr>:$max_oc
+  );
+  let results = (outs TransformHandleTypeInterface:$remaining);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
 #endif // SCONV

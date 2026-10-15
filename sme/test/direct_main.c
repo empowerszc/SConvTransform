@@ -176,10 +176,15 @@ static void bench_one(const char *name, Cfg c, int nt) {
 int main(int argc, char **argv) {
   if (argc > 1 && strcmp(argv[1], "bench") == 0) {
     int nt = argc > 2 ? atoi(argv[2]) : 38;
-    Cfg c9  = { 4, 384, 80, 80, 96, 80, 80 };
-    Cfg c10 = { 4, 768, 40, 40, 96, 40, 40 };
-    bench_one("custom_9", c9, nt);
-    bench_one("custom_10", c10, nt);
+    /* ConvBench custom 配置中 stride1/pad1/3x3 的 6 个 SME 候选（几何取自
+       scripts/convbench/samples/custom_conv.csv 的 unpadded 输入尺寸）。
+       stride2 的 c1/c3/c4/c6/c8 不适用 SME，未列入。 */
+    bench_one("custom_0",  (Cfg){ 4, 192,  40,  40, 192,  40,  40 }, nt);
+    bench_one("custom_2",  (Cfg){ 4,  96,  80,  80,  96,  80,  80 }, nt);
+    bench_one("custom_5",  (Cfg){ 4,  48, 160, 160,  48, 160, 160 }, nt);
+    bench_one("custom_7",  (Cfg){ 4, 192,  20,  20, 192,  20,  20 }, nt);
+    bench_one("custom_9",  (Cfg){ 4, 384,  80,  80,  96,  80,  80 }, nt);
+    bench_one("custom_10", (Cfg){ 4, 768,  40,  40,  96,  40,  40 }, nt);
     return 0;
   }
   int bad = 0;
