@@ -24,11 +24,25 @@ static int run(int N,int Ic,int Oh,int Ow,int Oc){
   free(in);free(flt);free(out);free(ref);
   return bad?1:0;
 }
+/* The public entry must reject a geometry that the kernel cannot handle
+   (here `Ih > Oh+2`, which would over-read the input) rather than return
+   success. */
+static int run_invalid(void){
+  int N=1,Ic=2,Ih=12,Iw=12,Oc=16,Oh=8,Ow=8;
+  float*in=malloc(sizeof(float)*(size_t)N*Ic*Ih*Iw);
+  float*flt=malloc(sizeof(float)*(size_t)Oc*Ic*9);
+  float*out=malloc(sizeof(float)*(size_t)N*Oc*Oh*Ow);
+  int r=sconv_sme_direct(N,Ic,Ih,Iw,Oc,Oh,Ow,in,flt,out);
+  printf("invalid geometry rejected: %s (ret=%d)\n", r?"OK":"FAIL", r);
+  free(in);free(flt);free(out);
+  return r?0:1;
+}
 int main(void){
   int bad=0;
   bad|=run(1,2,8,8,16);
   bad|=run(1,3,10,10,17);
   bad|=run(2,5,7,13,32);
+  bad|=run_invalid();
   printf(bad?"SHIM FAIL\n":"SHIM PASS\n");
   return bad?1:0;
 }

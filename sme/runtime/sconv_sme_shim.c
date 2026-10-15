@@ -43,11 +43,19 @@ static int sme_threads(void){
 int sconv_sme_direct(int64_t N,int64_t Ic,int64_t Ih,int64_t Iw,
                      int64_t Oc,int64_t Oh,int64_t Ow,
                      const float*in,const float*filter,float*out){
+  /* The kernel computes a valid conv: it needs Oh==Ih-2 rows / Ow==Iw-2 cols of
+     input, and must not read more rows/cols than the padded buffers hold. */
+  if (N<=0||Ic<=0||Oc<=0||Oh<=0||Ow<=0||Ih<Oh+2||Iw<Ow+2)
+    return -1;
+
   int64_t OhP=(Oh+3)/4*4, OwP=(Ow+R-1)/R*R, OcP=(Oc+R-1)/R*R;
   int64_t IhP=OhP+2, IwP=OwP+2;
+  if (Ih>IhP||Iw>IwP)
+    return -1;
 
   /* 权重打包：wpack[(ic*9+kh*3+kw)*OcP + oc] */
   float*wpack=calloc((size_t)Ic*9*OcP,sizeof(float));
+  if(!wpack) return -1;
   for(int64_t ic=0;ic<Ic;ic++)
     for(int64_t kh=0;kh<3;kh++)
       for(int64_t kw=0;kw<3;kw++)
@@ -59,6 +67,7 @@ int sconv_sme_direct(int64_t N,int64_t Ic,int64_t Ih,int64_t Iw,
   if(!need_pad){ pin=(float*)in; }
   else {
     pin=calloc((size_t)N*Ic*IhP*IwP,sizeof(float));
+    if(!pin){ free(wpack); return -1; }
     for(int64_t n=0;n<N;n++)
       for(int64_t ic=0;ic<Ic;ic++)
         for(int64_t r=0;r<Ih;r++)
@@ -69,6 +78,7 @@ int sconv_sme_direct(int64_t N,int64_t Ic,int64_t Ih,int64_t Iw,
 
   /* 预 pad 输出 */
   float*pout=calloc((size_t)N*OcP*OhP*OwP,sizeof(float));
+  if(!pout){ if(need_pad)free(pin); free(wpack); return -1; }
 
   int64_t Ocb=OcP/R, OhB=OhP/4, T=N*Ocb*OhB;
   int nt=sme_threads(); if(nt>T)nt=(int)T; if(nt<1)nt=1;
@@ -78,14 +88,21 @@ int sconv_sme_direct(int64_t N,int64_t Ic,int64_t Ih,int64_t Iw,
   else {
     pthread_t*th=malloc(sizeof(pthread_t)*nt);
     Job*ar=malloc(sizeof(Job)*nt);
+    char*okc=calloc(nt,1);
+    if(!th||!ar||!okc){
+      free(th); free(ar); free(okc);
+      if(need_pad)free(pin); free(wpack); free(pout);
+      return -1;
+    }
     int64_t per=(T+nt-1)/nt, t=0;
     for(int i=0;i<nt;i++){
       int64_t cnt=per; if(t+cnt>T)cnt=T-t; if(cnt<0)cnt=0;
       ar[i]=base; ar[i].T0=t; ar[i].TN=cnt; t+=cnt;
-      pthread_create(&th[i],NULL,worker,&ar[i]);
+      if(pthread_create(&th[i],NULL,worker,&ar[i])==0) okc[i]=1;
+      else run_range(&ar[i]);   /* run inline if the thread could not start */
     }
-    for(int i=0;i<nt;i++)pthread_join(th[i],NULL);
-    free(th); free(ar);
+    for(int i=0;i<nt;i++) if(okc[i]) pthread_join(th[i],NULL);
+    free(th); free(ar); free(okc);
   }
 
   /* unpad 输出（只回写有效 oc<Oc,oh<Oh,ow<Ow） */

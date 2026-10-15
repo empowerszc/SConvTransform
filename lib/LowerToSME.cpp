@@ -56,6 +56,11 @@ static constexpr double kGemmPeak = 2.0e12;
 static constexpr double kSmePeak = 2.85e12;
 static constexpr double kBandwidth = 3.5e10;
 
+// Fixed per-call cost of the SME path (thread spawn/join, `smstart`/ZA setup,
+// weight packing) that dominates for tiny problems and makes SME unprofitable
+// there regardless of the shape gates (e.g. N1 Ic384 Oc16 Oh4 Ow4).
+static constexpr double kCallOverhead = 1.0e-4;
+
 // Defaults for the `min_ic` / `max_oc` gates (see SMESelectOp::apply).
 static constexpr int64_t kDefaultMinIc = 384;
 static constexpr int64_t kDefaultMaxOc = 96;
@@ -118,7 +123,7 @@ static double fSme(const SmeGeom &g) {
   double flops = 2.0 * g.N * g.Oh * g.Ow * g.Oc * g.Ic * 9;
   double Ocb = (double)((g.Oc + 15) / 16);
   double traffic = (double)g.N * g.Ic * g.Ih * g.Iw * Ocb;
-  return waste * flops / kSmePeak + traffic * 4.0 / kBandwidth;
+  return waste * flops / kSmePeak + traffic * 4.0 / kBandwidth + kCallOverhead;
 }
 
 /// Create a LLVM function declaration for the SME direct-conv shim. The
