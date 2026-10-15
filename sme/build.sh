@@ -9,5 +9,5 @@ mlir-opt "$src" \
   --test-lower-to-arm-sme \
   --convert-vector-to-llvm --convert-to-llvm --reconcile-unrealized-casts \
   | mlir-translate --mlir-to-llvmir > "${base}.ll"
-clang -march=armv9-a+sme -O2 -c "${base}.ll" -o "${base}.o"
+clang -march=armv9-a+sme -O2 -fPIC -c "${base}.ll" -o "${base}.o"
 echo "built ${base}.o"

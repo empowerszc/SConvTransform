@@ -1,8 +1,12 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "sme_abi.h"
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <sched.h>
 
 #define R 16   /* SVL=512 -> R=16（本机已确认） */
 
@@ -25,6 +29,13 @@ static void*worker(void*p){ run_range((Job*)p); return NULL; }
 static int sme_threads(void){
   const char*e=getenv("SCONV_SME_THREADS");
   if(e&&*e){int n=atoi(e); if(n>0)return n;}
+  /* Respect the process CPU affinity (taskset/numactl/cgroups) so we do not
+     oversubscribe the cores actually available to us. */
+  cpu_set_t set;
+  if(sched_getaffinity(0,sizeof(set),&set)==0){
+    int n=CPU_COUNT(&set);
+    if(n>0)return n;
+  }
   long n=sysconf(_SC_NPROCESSORS_ONLN);
   return n>0?(int)n:1;
 }

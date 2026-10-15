@@ -804,3 +804,31 @@ git commit -m "feat(sme): wire sconv-sme into ConvBench (build/load/--transform)
 **Type consistency：** `sconv_sme_compute`（Task 1）在 Task 2 的 `sme_abi.h` 中以同一签名声明；`sconv_sme_direct`（Task 2）在 Task 3 生成同形 `llvm.func`；`sme.direct` 标记在 Task 3（消费）与 Task 4（产出）一致；`MemRef1D/2D`+`mk1d/mk2d` 定义一次于 `sme/runtime/sme_abi.h`。
 
 **Review Focus 覆盖：** (1) 预 pad 对齐 → Task 2 Step 4；(2) 尾块 → Task 2 Step 4（Oc=17/Ow=13）与 Task 3 之外的 ConvBench 形状；(3) `sme.direct` 只作用卷积 → Task 4 Step 5–6（其余走 `to_blas`）；(4) ABI 一致 → Task 2 Step 7；(5) 路由 → Task 4 Step 6 + Task 5 Step 4。
+
+---
+
+## 验收结果（Phase 2，本机 Kunpeng 0xd22，38 线程 node0）
+
+**正确性（`--transform test/lowering/sconv-sme.mlir`，11 配置）：11 passed, 0 failed。**
+c9/c10 走 SME，其余 9 个走 GEMM，`np.allclose(rtol=atol=1e-3)` 全通过。
+**无回归（默认 `sconv-blas.mlir`）：11 passed, 0 failed。**
+
+**路由（`transform.lower.sme_select`）：** c9/c10 → `@sconv_sme_direct`，c0–c8 → `@sgemm_blas_kernel`。
+
+**性能（ConvBench perf payload，38 线程；SME 流程 vs GEMM 流程，GFLOPS）：**
+
+| 配置 | GEMM | SME | 说明 |
+|---|---|---|---|
+| custom_9 | 5.76 | **243.2** | 42.2× |
+| custom_10 | 6.17 | **114.2** | 18.5× |
+| custom_0/1/2/3/4/5/6/7/8 | 8.31/7.64/5.60/8.43/8.65/3.18/6.00/7.17/8.69 | 8.35/7.61/5.54/8.52/8.62/3.20/5.71/7.01/8.64 | 与 GEMM 持平（±5%），无回归 |
+
+> 说明：ConvBench 的 baseline 是 JIT 逐标量解释执行，绝对 GFLOPS 远低于已编译的
+> `native_impl`/探针数字，故验收以**相对加速比**为准。已编译探针的对照数字为：
+> SME c9≈2851、c10≈1474 GFLOPS，GEMM c9=1620、c10=957 GFLOPS（SME 1.27×/1.54×）。
+
+**关键工程修正（见 ledger Ruling 6–8）：** `build.sh` 加 `-fPIC` 使 kernel `.o` 可入 `.so`；
+shim 默认线程数改用 `sched_getaffinity` 以尊重 `numactl/taskset`（避免 608 线程挤占 38 核，
+c9 由 72→243 GFLOPS）；ConvBench 大配置的 JIT baseline 每次迭代需数分钟，故只测变换后的
+SME/GEMM 路径做对比。
+

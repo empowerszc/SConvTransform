@@ -35,6 +35,7 @@ RUNNER = f"{LLVM_DIR}/bin/mlir-cpu-runner"
 RUNTIME_DIR = os.path.join(SCONV_ROOT, "scripts/convbench/runtime")
 BUILD_DIR = os.path.join(SCONV_ROOT, "build/convbench_runtime")
 TF_BLAS = os.path.join(SCONV_ROOT, "test/lowering/sconv-blas.mlir")
+TF_SME = os.path.join(SCONV_ROOT, "test/lowering/sconv-sme.mlir")
 CORRECTNESS_TPL = os.path.join(SCONV_ROOT, "scripts/convbench/payloads/correctness_payload.mlir")
 PERFORMANCE_TPL = os.path.join(SCONV_ROOT, "scripts/convbench/payloads/performance_payload.mlir")
 SAMPLE_CSV = os.path.join(SCONV_ROOT, "scripts/convbench/samples/small_regular.csv")
@@ -59,22 +60,57 @@ def build_runtime_libs():
         r = subprocess.run(["clang", "-shared", "-o", rtclock_lib, src],
                            capture_output=True, text=True)
         if r.returncode: print(f"  WARN: rtclock build failed: {r.stderr[:200]}")
-    # sgemm_blas_kernel (links OpenBLAS)
+    # sgemm_blas_kernel: OpenBLAS or HPCKit kblas
     if not os.path.exists(blas_lib):
         src = os.path.join(RUNTIME_DIR, "sgemm_blas_kernel.c")
-        openblas_inc = "/opt/homebrew/opt/openblas/include" if IS_MAC else "/usr/include/openblas"
-        openblas_lib = "/opt/homebrew/opt/openblas/lib" if IS_MAC else "/usr/lib"
-        cmd = ["clang", "-shared", "-o", blas_lib, src,
-               f"-I{openblas_inc}", f"-L{openblas_lib}", "-lopenblas"]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode: print(f"  WARN: sgemm_blas_kernel build failed: {r.stderr[:200]}")
-    return rtclock_lib, blas_lib
+        kml = os.environ.get("KMLROOT",
+            "/home/envs/HPCKit_26.1.RC1/HPCKit/latest/kml/bisheng")
+        kblas_variant = os.environ.get("KBLAS_VARIANT", "multi")
+        if os.path.exists(os.path.join(kml, "include", "kblas.h")):
+            # Prefer HPCKit kblas if it has the SME/matrix variant for Kunpeng
+            for sub in ["matrix/kblas", "sve/kblas"]:
+                if os.path.exists(os.path.join(kml, "lib", sub, kblas_variant, "libkblas.so")):
+                    kblas_libdir = os.path.join(kml, "lib", sub, kblas_variant)
+                    break
+            cmd = ["clang", "-shared", "-o", blas_lib, src,
+                   f"-I{kml}/include", f"-L{kblas_libdir}", "-lkblas", "-DUSE_KBLAST"]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode:
+                print(f"  WARN: sgemm_blas_kernel (kblas) build failed: {r.stderr[:300]}")
+        else:
+            openblas_inc = "/opt/homebrew/opt/openblas/include" if IS_MAC else "/usr/include/openblas"
+            openblas_lib = "/opt/homebrew/opt/openblas/lib" if IS_MAC else "/usr/lib"
+            cmd = ["clang", "-shared", "-o", blas_lib, src,
+                   f"-I{openblas_inc}", f"-L{openblas_lib}", "-lopenblas"]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode: print(f"  WARN: sgemm_blas_kernel build failed: {r.stderr[:200]}")
+    # sconv_sme_direct: ArmSME direct-conv kernel (MLIR) + C shim (pad/pack/threads).
+    sme_lib = os.path.join(BUILD_DIR, f"libsconv_sme_direct.{LIB_EXT}")
+    sme_dir = os.path.join(SCONV_ROOT, "sme")
+    sme_mlir = os.path.join(sme_dir, "kernel/sconv_sme_direct.mlir")
+    sme_obj = os.path.join(sme_dir, "kernel/sconv_sme_direct.o")
+    sme_shim = os.path.join(sme_dir, "runtime/sconv_sme_shim.c")
+    builtins = f"{LLVM_DIR}/lib/clang/19/lib/aarch64-unknown-linux-gnu/libclang_rt.builtins.a"
+    newest_src = max(os.path.getmtime(sme_mlir), os.path.getmtime(sme_shim))
+    if not os.path.exists(sme_lib) or os.path.getmtime(sme_lib) < newest_src:
+        env = {**os.environ, "LLVM_BUILD_DIR": LLVM_DIR,
+               "LD_LIBRARY_PATH": f"{LLVM_DIR}/lib:/home/z00889957/miniconda3/lib:" + os.environ.get("LD_LIBRARY_PATH", "")}
+        r = subprocess.run([os.path.join(sme_dir, "build.sh"), sme_mlir],
+                           capture_output=True, text=True, cwd=sme_dir, env=env)
+        if r.returncode:
+            print(f"  WARN: sme kernel build failed: {r.stderr[:300]}")
+        else:
+            cmd = ["clang", "-shared", "-fPIC", "-O2", "-march=armv9-a+sme",
+                   "-o", sme_lib, sme_shim, sme_obj, builtins, "-lpthread"]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode: print(f"  WARN: sme shim build failed: {r.stderr[:300]}")
+    return rtclock_lib, blas_lib, sme_lib
 
-def get_libs(rtclock_lib, blas_lib):
+def get_libs(rtclock_lib, blas_lib, sme_lib):
     return ",".join([
         f"{LLVM_DIR}/lib/libmlir_c_runner_utils.{LIB_EXT}",
         f"{LLVM_DIR}/lib/libmlir_runner_utils.{LIB_EXT}",
-        rtclock_lib, blas_lib,
+        rtclock_lib, blas_lib, sme_lib,
     ])
 
 def sh(cmd):
@@ -133,7 +169,7 @@ def gen_payloads(csv, template, out_dir, num=None, runs=5, warmup=3):
     cmd += ["--runs", str(runs), "--warmup", str(warmup)]
     subprocess.run(cmd, capture_output=True, text=True)
 
-def correctness_test(payload_dir, n, libs):
+def correctness_test(payload_dir, n, libs, tf=TF_BLAS):
     print(f"\n{'='*60}")
     print(f"  Correctness Test: {n} convolutions")
     print(f"{'='*60}")
@@ -145,7 +181,7 @@ def correctness_test(payload_dir, n, libs):
         if err:
             print(f"  SKIP {f}: baseline error"); failed += 1; continue
         tf_tmp = mlir.replace(".mlir", ".tf.mlir")
-        r = sh([SCONV, "-transform=" + TF_BLAS, mlir])
+        r = sh([SCONV, "-transform=" + tf, mlir])
         if r.returncode:
             print(f"  SKIP {f}: transform error"); failed += 1; continue
         with open(tf_tmp, "w") as of: of.write(r.stdout)
@@ -163,7 +199,7 @@ def correctness_test(payload_dir, n, libs):
     print(f"\n  Result: {passed} passed, {failed} failed")
     return passed, failed
 
-def perf_test(payload_dir, n, libs, runs=5, warmup=3):
+def perf_test(payload_dir, n, libs, runs=5, warmup=3, tf=TF_BLAS):
     print(f"\n{'='*85}")
     print(f"  Performance Test: {n} convolutions (warmup={warmup}, runs={runs})")
     print(f"  Time = average per-iteration ms (total_time / runs)")
@@ -180,7 +216,7 @@ def perf_test(payload_dir, n, libs, runs=5, warmup=3):
         b_gflops = get_flops(b_out)
         b_total_ms = get_time_ms(b_out)
         tf_tmp = mlir.replace(".mlir", ".tf.mlir")
-        r = sh([SCONV, "-transform=" + TF_BLAS, mlir])
+        r = sh([SCONV, "-transform=" + tf, mlir])
         if r.returncode: continue
         with open(tf_tmp, "w") as of: of.write(r.stdout)
         t_out, err, _ = lower_run(tf_tmp, libs)
@@ -213,13 +249,18 @@ if __name__ == "__main__":
     ap.add_argument("--runs", type=int, default=5, help="Timed iterations (after warmup)")
     ap.add_argument("--warmup", type=int, default=3, help="Warmup iterations (untimed)")
     ap.add_argument("--correctness-only", action="store_true")
+    ap.add_argument("--transform", default=TF_BLAS,
+                    help="Transform script for the SConv path (default: sconv-blas.mlir)")
     args = ap.parse_args()
+    tf = os.path.abspath(args.transform)
 
     print("Building runtime libraries...")
-    rtclock_lib, blas_lib = build_runtime_libs()
-    libs = get_libs(rtclock_lib, blas_lib)
+    rtclock_lib, blas_lib, sme_lib = build_runtime_libs()
+    libs = get_libs(rtclock_lib, blas_lib, sme_lib)
     print(f"  rtclock: {rtclock_lib}")
     print(f"  blas:   {blas_lib}")
+    print(f"  sme:    {sme_lib}")
+    print(f"  transform: {tf}")
 
     # Generate payloads
     tmp = "/tmp/sconvtest_convbench"
@@ -228,9 +269,9 @@ if __name__ == "__main__":
     gen_payloads(args.csv, CORRECTNESS_TPL, corr_dir, args.num, args.runs, args.warmup)
     gen_payloads(args.csv, PERFORMANCE_TPL, perf_dir, args.num, args.runs, args.warmup)
 
-    p, f = correctness_test(corr_dir, args.num, libs)
+    p, f = correctness_test(corr_dir, args.num, libs, tf)
     if not args.correctness_only:
-        perf_test(perf_dir, args.num, libs, args.runs, args.warmup)
+        perf_test(perf_dir, args.num, libs, args.runs, args.warmup, tf)
     print(f"\n{'='*60}")
     print(f"  Done. Correctness: {p} passed, {f} failed")
     print(f"{'='*60}")
