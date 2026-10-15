@@ -14,7 +14,7 @@
 //   out:   memref<?x?xf32>  [N*OcP][OhP*OwP] (pre-padded, spatial = oh*OwP+ow)
 //
 // Scalars: N, Ic, IwP, OcP, OhP, OwP, T0, TN.
-func.func @sconv_sme_direct(%N: index, %Ic: index, %IwP: index, %OcP: index,
+func.func @sconv_sme_compute(%N: index, %Ic: index, %IwP: index, %OcP: index,
                             %OhP: index, %OwP: index, %T0: index, %TN: index,
                             %in: memref<?x?xf32>, %wpack: memref<?xf32>,
                             %out: memref<?x?xf32>) {

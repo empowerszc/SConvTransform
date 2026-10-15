@@ -7,7 +7,7 @@
 
 /* Full direct conv: stride1, 3x3, SAME pad, pre-padded I/O. Work is flattened
    into tasks over (n, ocb, 4-row block); the caller runs tasks [T0, T0+TN). */
-extern void sconv_sme_direct(
+extern void sconv_sme_compute(
     int64_t N, int64_t Ic, int64_t IwP, int64_t OcP, int64_t OhP, int64_t OwP,
     int64_t T0, int64_t TN,
     float *, float *, int64_t, int64_t, int64_t, int64_t, int64_t,
@@ -66,7 +66,7 @@ static void call_kernel(Cfg c, Buf *b, int64_t t0, int64_t tn) {
   MemRef2D min  = mk2d(b->pin, (int64_t)c.N * c.Ic, (int64_t)b->IhP * b->IwP);
   MemRef1D mw   = mk1d(b->wpack, (int64_t)c.Ic * 9 * b->OcP);
   MemRef2D mout = mk2d(b->out, (int64_t)c.N * b->OcP, (int64_t)b->OhP * b->OwP);
-  sconv_sme_direct(c.N, c.Ic, b->IwP, b->OcP, b->OhP, b->OwP, t0, tn,
+  sconv_sme_compute(c.N, c.Ic, b->IwP, b->OcP, b->OhP, b->OwP, t0, tn,
                    min.allocated, min.aligned, min.offset, min.size0, min.size1, min.stride0, min.stride1,
                    mw.allocated, mw.aligned, mw.offset, mw.size, mw.stride,
                    mout.allocated, mout.aligned, mout.offset, mout.size0, mout.size1, mout.stride0, mout.stride1);
