@@ -3,4 +3,13 @@ test/res*
 test/out*
 test/log*
 native_impl/build/
+native_impl/build_dbg/
 env.sh
+__pycache__/
+*.pyc
+sme/smoke.out
+sme/shim.out
+sme/kernel/sme_smoke.ll
+sme/kernel/sme_smoke.o
+sme/test/shim_main.o
+sme/test/smoke_main.o
