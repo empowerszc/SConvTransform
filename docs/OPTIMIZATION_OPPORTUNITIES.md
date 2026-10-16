@@ -5,6 +5,22 @@
 
 ---
 
+## 实施状态（2026-10-16 更新）
+
+> 目标机实测与优化前后结果见 `docs/PERFORMANCE_VS_PYTORCH.md`；本文各项的当前落地情况：
+
+| # | 优化 | 状态 | 说明 |
+|---|------|------|------|
+| 1 | 多核并行 | **部分实现** | `native_impl` 已按 `batch×空间 tile` 多线程并行（GEMM 路径）；**MLIR/ConvBench 管线仍近单线程**，未做 `scf.for→scf.parallel`。 |
+| 2 | SME 微内核 | **部分实现** | `custom_9/custom_10` 走**手写 SME 直接卷积**（`sme/`，非 vector.contract→ArmSME 路线），已接入 ConvBench 自动路由；覆盖面仅 c9/c10。 |
+| 3 | 向量化打包 | **已评估/回退** | `native_impl` 对 `stride==1` 打包做 `std::copy` 向量化 A/B：**无收益**（带宽受限），已回退；MLIR 侧标量打包未动。 |
+| 4 | 流水线 (ping-pong) | 未实现 | — |
+| 5 | 自动调参 | **部分实现** | `native_impl` 新增运行时 `(Nwin,Nf)` 自动调优（`--nwin 0 --nf 0`）；CSA 代价模型的 `arch_info` 调参未做。 |
+| 6 | NHWC 布局 | 未实现 | — |
+| 7 | 自动 padding | 未实现 | 仅 SME shim 内部做右下补零。 |
+
+---
+
 ## 现状: 当前 SConvTransform 的性能瓶颈
 
 在 Apple M4 (ARM64, SME) 上的实测数据:

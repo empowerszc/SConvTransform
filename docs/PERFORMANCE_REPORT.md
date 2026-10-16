@@ -4,6 +4,9 @@
 > 测试平台: Apple Mac mini M4 (ARM64, SME)
 > LLVM 版本: 19.1.7
 > 报告: SConvTransform (CSA + tiling + packing + OpenBLAS microkernel) vs Native Lowering
+>
+> 后续: 目标机 (Kunpeng aarch64 + SME) 与 PyTorch conv2d 的对比、以及 `native_impl` 优化前后结果
+> 见 **`docs/PERFORMANCE_VS_PYTORCH.md`**。
 
 ---
 
