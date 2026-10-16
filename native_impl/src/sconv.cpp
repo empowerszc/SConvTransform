@@ -6,6 +6,8 @@
 
 #include "sconv_csa.h"
 #include <vector>
+#include <string>
+#include <map>
 #include <cstring>
 #include <chrono>
 #include <cstdio>
@@ -13,8 +15,10 @@
 #include <cmath>
 #include <algorithm>
 
-#ifdef USE_OPENBLAS
+#if defined(USE_OPENBLAS)
 #include <cblas.h>
+#elif defined(USE_KBLAST)
+#include <kblas.h>
 #endif
 
 // ---- Tensor helpers ----
@@ -65,12 +69,11 @@ void conv2d_naive(const Tensor& input, const Tensor& weight, Tensor& output,
 
 void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
                   int strideH, int strideW, int padTop, int padLeft,
-                  int Nwin, int Nf) {
+                  int Nwin, int Nf, int num_threads) {
     int N = input.N, Ic = input.C, Ih = input.H, Iw = input.W;
     int Oc = weight.N, Fh = weight.H, Fw = weight.W;
     int Oh = output.H, Ow = output.W;
     int Ohw = Oh * Ow;  // collapsed spatial
-    int K = 0; // = Nc * Fh * Fw, computed per Nc
 
     // CSA
     ConvInfo ci{(int64_t)Ic, (int64_t)Iw, (int64_t)Oh, (int64_t)Ow,
@@ -86,96 +89,265 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
     CSAStrategy strat = csa.run();
 
     int Nc = strat.tile_c;
-    int tCH = (Ic + Nc - 1) / Nc;
     int K2 = strat.k2;
     int K3 = strat.k3;
-    bool is_IS = (strat.schd == IS);
+    int K = Nc * Fh * Fw;
 
-    // Allocate packed buffers
-    // Packed input: [Nc*Fh*Fw, Nwin] = [K, M]  (reused per tile)
-    // Packed filter: [Nc*Fh*Fw, Nf]  = [K, N]
-    K = Nc * Fh * Fw;
-    std::vector<float> packedA((size_t)K * Nwin);
-    std::vector<float> packedB((size_t)K * Nf);
-    std::vector<float> packedC((size_t)Nf * Nwin);
+    // Per-thread packed buffers (no reallocation across runs)
+    static thread_local std::vector<float> packedA, packedC;
+    static thread_local std::vector<float> inrow;
+    static thread_local std::vector<int> row_w0, row_w1;
+    static thread_local long long tl_pack_ns = 0, tl_gemm_ns = 0, tl_calls = 0;
+    static thread_local long long tl_unpack_ns = 0;
+    bool timing = getenv("SCONV_TIMING") != nullptr;
 
-    int nWinTiles = (Ohw + Nwin - 1) / Nwin;
-    int nFltTiles = (Oc + Nf - 1) / Nf;
-
-    for (int n = 0; n < N; n++) {
-        for (int ic_start = 0; ic_start < Ic; ic_start += Nc) {
-            int nc = std::min(Nc, Ic - ic_start);
-            int k_dim = nc * Fh * Fw;
-
-            // Pack filter tile for this channel range
-            // [nc, Fh, Fw, Nf] → packed [k_dim, Nf]
-            for (int nf_start = 0; nf_start < Oc; nf_start += Nf) {
-                int nf = std::min(Nf, Oc - nf_start);
-
-                // Outer loop: K2 groups (filter tiles), inner: K3 groups (window tiles)
-                // For simplicity, process all tiles sequentially (CSA guides ordering in MLIR)
-                for (int wt = 0; wt < nWinTiles; wt++) {
-                    int nwin = std::min(Nwin, Ohw - wt * Nwin);
-
-                    // Pack input: [nc, Fh, Fw, nwin] → [k_dim, nwin]
-                    for (int ic = 0; ic < nc; ic++)
-                    for (int fh = 0; fh < Fh; fh++)
-                    for (int fw = 0; fw < Fw; fw++)
-                    for (int w = 0; w < nwin; w++) {
-                        int ohw = wt * Nwin + w;
-                        int oh = ohw / Ow;
-                        int ow = ohw % Ow;
-                        int ih = oh * strideH + fh - padTop;
-                        int iw = ow * strideW + fw - padLeft;
-                        float val = 0.0f;
-                        if (ih >= 0 && ih < Ih && iw >= 0 && iw < Iw)
-                            val = input.at(n, ic_start + ic, ih, iw);
-                        // packedA[k_idx][w] where k_idx = (ic*Fh+fh)*Fw+fw
-                        packedA[((size_t)(ic * Fh + fh) * Fw + fw) * nwin + w] = val;
-                    }
-
-                    // Pack filter: [nc, Fh, Fw, nf] → [k_dim, nf]
-                    for (int ic = 0; ic < nc; ic++)
-                    for (int fh = 0; fh < Fh; fh++)
-                    for (int fw = 0; fw < Fw; fw++)
-                    for (int f = 0; f < nf; f++) {
-                        packedB[((size_t)(ic * Fh + fh) * Fw + fw) * nf + f] =
-                            weight.at(nf_start + f, ic_start + ic, fh, fw);
-                    }
-
-                    // Microkernel: C[nf, nwin] += B[k_dim, nf]^T * A[k_dim, nwin]
-                    memset(packedC.data(), 0, (size_t)nf * nwin * sizeof(float));
-#ifdef USE_OPENBLAS
-                    // C = B^T * A + C  (our wrapper: same as SConv's sgemm_blas_kernel)
-                    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                                nf, nwin, k_dim,
-                                1.0f,
-                                packedB.data(), nf,    // B is [k_dim, nf], ldb=nf
-                                packedA.data(), nwin,   // A is [k_dim, nwin], lda=nwin
-                                1.0f,
-                                packedC.data(), nwin); // C is [nf, nwin], ldc=nwin
-#else
-                    // Fallback: naive GEMM (no OpenBLAS)
-                    for (int fi = 0; fi < nf; fi++)
-                    for (int wi = 0; wi < nwin; wi++) {
-                        float s = 0.0f;
-                        for (int ki = 0; ki < k_dim; ki++)
-                            s += packedB[ki * nf + fi] * packedA[ki * nwin + wi];
-                        packedC[fi * nwin + wi] = s;
-                    }
-#endif
-                    // Unpack C → output
+    // Filter pre-pack: Bc[ft][ic0][k=(ic_local*Fh+fh)*Fw+fw][nf], contiguous
+    // slices (ldb = nf_str) → fast CblasTrans B operand for every sgemm.
+    // Rebuilt per oc-tile width so the auto-tuner can try different Nf values.
+    int nIc = (Ic + Nc - 1) / Nc;
+    std::vector<float> Bc;   // shared, read-only inside the parallel region
+    auto build_Bc = [&](int nf_str) -> int {
+        int nFlt = (Oc + nf_str - 1) / nf_str;
+        Bc.assign((size_t)nFlt * nIc * Nc * Fh * Fw * nf_str, 0.0f);
+        size_t tileStride = (size_t)Nc * Fh * Fw * nf_str;
+        // Embarrassingly parallel over the disjoint (ft, it) slices.
+#pragma omp parallel for collapse(2) schedule(static) num_threads(num_threads)
+        for (int ft = 0; ft < nFlt; ft++) {
+            for (int it = 0; it < nIc; it++) {
+                int nf_start = ft * nf_str;
+                int nf = std::min(nf_str, Oc - nf_start);
+                int ic0 = it * Nc;
+                int nc = std::min(Nc, Ic - ic0);
+                float* pB = &Bc[(size_t)ft * nIc * tileStride + (size_t)it * tileStride];
+                for (int ic = 0; ic < nc; ic++)
+                for (int fh = 0; fh < Fh; fh++)
+                for (int fw = 0; fw < Fw; fw++)
                     for (int f = 0; f < nf; f++)
-                    for (int w = 0; w < nwin; w++) {
-                        int ohw = wt * Nwin + w;
-                        int oh = ohw / Ow;
-                        int ow = ohw % Ow;
-                        output.at(n, nf_start + f, oh, ow) += packedC[f * nwin + w];
+                        pB[((size_t)(ic * Fh + fh) * Fw + fw) * nf_str + f] =
+                            weight.at(nf_start + f, ic0 + ic, fh, fw);
+            }
+        }
+        return nFlt;
+    };
+    // One task per (batch, window tile): each task packs the full-channel A
+    // slice once, then runs all oc-tile GEMMs. Output regions are disjoint
+    // across window tiles and batches → race-free, zero redundant packing.
+    //
+    // `run_pass` runs one full convolution for a given window width; keeping it
+    // as a lambda lets us auto-tune Nwin per shape/thread-count (see below).
+    auto run_pass = [&](int nw_str, int nf_str) {
+    int nFlt = (Oc + nf_str - 1) / nf_str;
+    int nWinTilesL = (Ohw + nw_str - 1) / nw_str;
+    int totalL = N * nWinTilesL;
+
+    auto run_tile = [&](int n, int wt) {
+        // Per-thread buffers must be sized inside the parallel region.
+        int nwin = std::min(nw_str, Ohw - wt * nw_str);
+        packedA.resize((size_t)Ic * Fh * Fw * nw_str);
+        packedC.resize((size_t)nf_str * nw_str);
+
+        // --- Pack full-channel input tile A[k_global][nwin], k=(ic*Fh+fh)*Fw+fw ---
+        // Row-cache: read each input row once per (ic, fh, r) and reuse it across
+        // the Fw kernel offsets as shifted slices.
+        auto tp0 = timing ? std::chrono::steady_clock::now()
+                          : std::chrono::steady_clock::time_point{};
+        int base_pos = wt * nw_str;
+        int r0 = base_pos / Ow;
+        int r1 = (base_pos + nwin - 1) / Ow;
+        int nrows = r1 - r0 + 1;
+        row_w0.resize(nrows); row_w1.resize(nrows);
+        for (int r = 0; r < nrows; r++) {
+            int rb = (r0 + r) * Ow;
+            row_w0[r] = std::max(0, rb - base_pos);
+            row_w1[r] = std::min(nwin, (rb + Ow) - base_pos);
+        }
+        int maxlen = (nwin - 1) * strideW + Fw;
+        if ((int)inrow.size() < maxlen) inrow.resize(maxlen);
+        for (int ic = 0; ic < Ic; ic++) {
+            const float* im = input.data.data() +
+                ((size_t)n * Ic + ic) * (size_t)(Ih * Iw);
+            for (int fh = 0; fh < Fh; fh++) {
+                for (int r = 0; r < nrows; r++) {
+                    int ih = (r0 + r) * strideH + fh - padTop;
+                    int w0 = row_w0[r], w1 = row_w1[r];
+                    int len = (w1 - w0 - 1) * strideW + Fw;
+                    int iw_lo = (base_pos - (r0 + r) * Ow + w0) * strideW - padLeft;
+                    int iw_hi = iw_lo + len;
+                    if (ih < 0 || ih >= Ih) {
+                        std::fill(inrow.data(), inrow.data() + len, 0.0f);
+                    } else {
+                        const float* rp = im + (size_t)ih * Iw;
+                        if (iw_lo >= 0 && iw_hi <= Iw) {
+                            std::copy(rp + iw_lo, rp + iw_hi, inrow.data());
+                        } else {
+                            std::fill(inrow.data(), inrow.data() + len, 0.0f);
+                            int s0 = std::max(0, iw_lo);
+                            int s1 = std::min(Iw, iw_hi);
+                            if (s0 < s1)
+                                std::copy(rp + s0, rp + s1,
+                                          inrow.data() + (s0 - iw_lo));
+                        }
                     }
-                } // window tiles
-            } // filter tiles
-        } // channel tiles
-    } // batch
+                    for (int fw = 0; fw < Fw; fw++) {
+                        float* pA = &packedA[((size_t)(ic * Fh + fh) * Fw + fw) * nwin];
+                        const float* s = inrow.data() + fw;
+                        for (int w = w0; w < w1; w++)
+                            pA[w] = s[(w - w0) * strideW];
+                    }
+                }
+            }
+        }
+        auto tp1 = timing ? std::chrono::steady_clock::now()
+                          : std::chrono::steady_clock::time_point{};
+        if (timing)
+            tl_pack_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(tp1 - tp0).count();
+
+        // --- GEMM over oc-tiles, accumulating C across channel tiles ---
+        for (int ft = 0; ft < nFlt; ft++) {
+            int nf_start = ft * nf_str;
+            int nf = std::min(nf_str, Oc - nf_start);
+            auto t0 = timing ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+#if defined(USE_OPENBLAS) || defined(USE_KBLAST)
+            for (int ic0 = 0; ic0 < Ic; ic0 += Nc) {
+                int nc = std::min(Nc, Ic - ic0);
+                int k_dim = nc * Fh * Fw;
+                cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                            nf, nwin, k_dim,
+                            1.0f,
+                            &Bc[(size_t)ft * nIc * (size_t)Nc * Fh * Fw * nf_str +
+                                (size_t)(ic0 / Nc) * (size_t)Nc * Fh * Fw * nf_str], nf_str,
+                            &packedA[(size_t)ic0 * Fh * Fw * nwin], nwin,
+                            (ic0 == 0 ? 0.0f : 1.0f),
+                            packedC.data(), nwin);
+            }
+#else
+            for (int fi = 0; fi < nf; fi++)
+            for (int wi = 0; wi < nwin; wi++) {
+                float s = 0.0f;
+                for (int ic0 = 0; ic0 < Ic; ic0 += Nc)
+                for (int ki = 0; ki < std::min(Nc, Ic - ic0) * Fh * Fw; ki++)
+                    s += Bc[(size_t)ft * nIc * (size_t)Nc * Fh * Fw * nf_str +
+                            (size_t)(ic0 / Nc) * (size_t)Nc * Fh * Fw * nf_str + (size_t)ki * nf_str + fi] *
+                         packedA[(size_t)(ic0 + ki / (Fh * Fw)) * Fh * Fw * nwin + ki % (Fh * Fw) * nwin + wi];
+                packedC[fi * nwin + wi] = s;
+            }
+#endif
+            auto t1 = timing ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+            if (timing) {
+                tl_gemm_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+                tl_calls += 1;
+            }
+
+            // --- Unpack C → output, row-segmented (no div/mod) ---
+            auto tu0 = timing ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+            for (int f = 0; f < nf; f++) {
+                const float* pc = &packedC[f * nwin];
+                float* outbase = output.data.data() +
+                    ((size_t)n * Oc + (nf_start + f)) * (size_t)Ohw;
+                for (int r = 0; r < nrows; r++) {
+                    int w0 = row_w0[r], w1 = row_w1[r];
+                    int oh = r0 + r;
+                    float* o = outbase + (size_t)oh * Ow;
+                    int col0 = base_pos + w0 - (r0 + r) * Ow;
+                    for (int w = w0; w < w1; w++)
+                        o[col0 + w - w0] += pc[w];
+                }
+            }
+            auto tu1 = timing ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+            if (timing)
+                tl_unpack_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(tu1 - tu0).count();
+        } // oc tiles
+    };
+
+        if (num_threads > 1) {
+#pragma omp parallel for schedule(dynamic) num_threads(num_threads)
+            for (int task = 0; task < totalL; task++) {
+                run_tile(task / nWinTilesL, task % nWinTilesL);
+            }
+        } else {
+            for (int task = 0; task < totalL; task++) {
+                run_tile(task / nWinTilesL, task % nWinTilesL);
+            }
+        }
+    };
+
+    // --- Adaptive tiling (Nwin, Nf) ---------------------------------------
+    // Too-large Nwin starves parallelism when N*nWinTiles is small (batch=1,
+    // low resolution); too-small Nwin hurts GEMM efficiency; Nf trades filter
+    // reuse vs tile count. Pick (Nwin, Nf) per (shape, threads) by timing a
+    // small grid once, then cache it. Bc is rebuilt for the chosen Nf.
+    int nw = Nwin, nf = Nf;
+    if (Nwin <= 0 || Nf <= 0) {
+        static thread_local std::map<std::string, std::pair<int, int>> tile_cache;
+        std::string key = std::to_string(N) + "_" + std::to_string(Ic) + "_" +
+                          std::to_string(Ohw) + "_" + std::to_string(Oc) + "_" +
+                          std::to_string(strideH) + "_" + std::to_string(Fh) + "_" +
+                          std::to_string(Fw) + "_" + std::to_string(num_threads);
+        auto itc = tile_cache.find(key);
+        if (itc != tile_cache.end()) {
+            nw = itc->second.first;
+            nf = itc->second.second;
+        } else {
+            int hiw = std::max(8, ((Ohw + 7) / 8) * 8);
+            int hif = std::max(8, Oc);
+            const int candsW[4] = {8, 16, 32, 64};
+            const int candsF[2] = {16, 32};
+            double best_ms = 1e300;
+            int best_nw = 16, best_nf = std::min(16, hif);
+            bool saved = timing;
+            timing = false;  // don't pollute SCONV_TIMING with tuning passes
+            for (int fi = 0; fi < 2; fi++) {
+                int cf = std::min(candsF[fi], hif);
+                if (fi > 0 && cf == std::min(candsF[fi - 1], hif)) continue;
+                build_Bc(cf);
+                int prevw = -1;
+                for (int wi = 0; wi < 4; wi++) {
+                    int cw = std::min(candsW[wi], hiw);
+                    if (cw == prevw) continue;
+                    prevw = cw;
+                    std::memset(output.data.data(), 0, output.size_bytes());
+                    run_pass(cw, cf);  // warm
+                    double c_ms = 1e300;
+                    for (int rep = 0; rep < 2; rep++) {
+                        std::memset(output.data.data(), 0, output.size_bytes());
+                        auto s0 = std::chrono::steady_clock::now();
+                        run_pass(cw, cf);
+                        double ms = std::chrono::duration<double, std::milli>(
+                                        std::chrono::steady_clock::now() - s0).count();
+                        if (ms < c_ms) c_ms = ms;
+                    }
+                    if (c_ms < best_ms) { best_ms = c_ms; best_nw = cw; best_nf = cf; }
+                }
+            }
+            timing = saved;
+            nw = best_nw;
+            nf = best_nf;
+            tile_cache[key] = {nw, nf};
+        }
+        std::memset(output.data.data(), 0, output.size_bytes());
+    }
+    build_Bc(nf);
+    if ((Nwin <= 0 || Nf <= 0) && getenv("SCONV_VERBOSE"))
+        fprintf(stderr, "  [auto] N=%d Ic=%d Ohw=%d Oc=%d -> Nwin=%d Nf=%d (threads=%d)\n",
+                N, Ic, Ohw, Oc, nw, nf, num_threads);
+    run_pass(nw, nf);
+    if (timing) {
+        long long pack_ns = 0, gemm_ns = 0, calls = 0, unpack_ns = 0;
+#pragma omp parallel reduction(+ : pack_ns, gemm_ns, calls, unpack_ns) num_threads(num_threads)
+        {
+            pack_ns += tl_pack_ns;
+            gemm_ns += tl_gemm_ns;
+            calls += tl_calls;
+            unpack_ns += tl_unpack_ns;
+        }
+        fprintf(stderr, "  [timing] pack=%.2fms gemm=%.2fms unpack=%.2fms calls=%lld (%.3fus/call)\n",
+                pack_ns * 1e-6, gemm_ns * 1e-6, unpack_ns * 1e-6, calls,
+                calls > 0 ? (double)gemm_ns / calls * 1e-3 : 0.0);
+    }
 }
 
 // ---- Verification ----
@@ -216,6 +388,14 @@ ConvConfig configs[] = {
     {"custom_8",  4,384,80,80,  384,3,3, 40,40,   2,1},
     {"custom_9",  4,384,80,80,   96,3,3, 80,80,   1,1},
     {"custom_10", 4,768,40,40,   96,3,3, 40,40,   1,1},
+    // Common ResNet-style 3x3 configs (batch=1 unless noted)
+    {"common_r18_56",   1, 64, 56,56,  64,3,3, 56,56,   1,1},
+    {"common_r18_28",   1,128, 28,28, 128,3,3, 28,28,   1,1},
+    {"common_r18_14",   1,256, 14,14, 256,3,3, 14,14,   1,1},
+    {"common_r18_7",    1,512,  7, 7, 512,3,3,  7, 7,   1,1},
+    {"common_r50_ds56", 1,128, 56,56, 256,3,3, 28,28,   2,1},
+    {"common_r50_ds28", 1,256, 28,28, 512,3,3, 14,14,   2,1},
+    {"common_thr_n8",   8, 64, 56,56,  64,3,3, 56,56,   1,1},
     // Small configs (batch=1, for quick verification)
     {"small_0",   1,18,14,14,  144,3,3, 7,7,     2,1},
     {"small_1",   1,48,10,10,   64,2,2, 5,5,     2,0},
@@ -223,22 +403,28 @@ ConvConfig configs[] = {
 
 int main(int argc, char** argv) {
     int runs = 3, warmup = 1;
+    int Nwin = 0, Nf = 0;   // <=0 => auto-tune (Nwin, Nf)
+    int threads = 1;
+    bool skip_naive = false;
     const char* filter = nullptr;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--runs") == 0 && i+1 < argc) runs = atoi(argv[++i]);
         else if (strcmp(argv[i], "--warmup") == 0 && i+1 < argc) warmup = atoi(argv[++i]);
         else if (strcmp(argv[i], "--filter") == 0 && i+1 < argc) filter = argv[++i];
+        else if (strcmp(argv[i], "--nwin") == 0 && i+1 < argc) Nwin = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--nf") == 0 && i+1 < argc) Nf = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--threads") == 0 && i+1 < argc) threads = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--skip-naive") == 0) skip_naive = true;
     }
 
-    int Nwin = 16, Nf = 8;
     bool has_blas =
-#ifdef USE_OPENBLAS
+#if defined(USE_OPENBLAS) || defined(USE_KBLAST)
         true;
 #else
         false;
 #endif
 
-    printf("SConv Benchmark (Nwin=%d, Nf=%d, OpenBLAS=%s)\n", Nwin, Nf, has_blas ? "YES" : "NO");
+    printf("SConv Benchmark (Nwin=%d, Nf=%d, threads=%d, OpenBLAS=%s)\n", Nwin, Nf, threads, has_blas ? "YES" : "NO");
     printf("warmup=%d, runs=%d\n\n", warmup, runs);
 
     printf("%-16s %10s %12s %12s %10s %10s %10s\n",
@@ -269,31 +455,37 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < weight.data.size(); i++) weight.data[i] = (float)(i % 100);
 
         // Correctness: run once, compare
-        conv2d_naive(input, weight, out_naive, stride, stride, pad, pad);
-        memset(out_sconv.data.data(), 0, out_sconv.size_bytes());
-        conv2d_sconv(input, weight, out_sconv, stride, stride, pad, pad, Nwin, Nf);
-
-        bool ok = verify(out_naive, out_sconv);
-        if (ok) n_pass++;
-
-        // Warmup
-        for (int w = 0; w < warmup; w++) {
+        bool ok = true;
+        if (!skip_naive) {
             conv2d_naive(input, weight, out_naive, stride, stride, pad, pad);
             memset(out_sconv.data.data(), 0, out_sconv.size_bytes());
-            conv2d_sconv(input, weight, out_sconv, stride, stride, pad, pad, Nwin, Nf);
+            conv2d_sconv(input, weight, out_sconv, stride, stride, pad, pad, Nwin, Nf, threads);
+            ok = verify(out_naive, out_sconv);
+            if (ok) n_pass++;
+        }
+
+        // Warmup (sconv only; skip naive when --skip-naive)
+        for (int w = 0; w < warmup; w++) {
+            if (!skip_naive)
+                conv2d_naive(input, weight, out_naive, stride, stride, pad, pad);
+            memset(out_sconv.data.data(), 0, out_sconv.size_bytes());
+            conv2d_sconv(input, weight, out_sconv, stride, stride, pad, pad, Nwin, Nf, threads);
         }
 
         // Time naive
-        double t0 = rtclock();
-        for (int r = 0; r < runs; r++)
-            conv2d_naive(input, weight, out_naive, stride, stride, pad, pad);
-        double t_naive = (rtclock() - t0) / runs * 1000.0; // ms
+        double t_naive = 0.0;
+        if (!skip_naive) {
+            double t0 = rtclock();
+            for (int r = 0; r < runs; r++)
+                conv2d_naive(input, weight, out_naive, stride, stride, pad, pad);
+            t_naive = (rtclock() - t0) / runs * 1000.0; // ms
+        }
 
         // Time sconv
-        t0 = rtclock();
+        double t0 = rtclock();
         for (int r = 0; r < runs; r++) {
             memset(out_sconv.data.data(), 0, out_sconv.size_bytes());
-            conv2d_sconv(input, weight, out_sconv, stride, stride, pad, pad, Nwin, Nf);
+            conv2d_sconv(input, weight, out_sconv, stride, stride, pad, pad, Nwin, Nf, threads);
         }
         double t_sconv = (rtclock() - t0) / runs * 1000.0;
 
@@ -302,10 +494,17 @@ int main(int argc, char** argv) {
         double speedup = t_naive / t_sconv;
 
         const char* status = ok ? "PASS" : "FAIL";
-        printf("%-16s %8.2fG %12.3f %12.3f %10.2f %10.2f %9.2fx  [%s]\n",
-               c.name, flops/1e9, t_naive, t_sconv, naive_gf, sconv_gf, speedup, status);
+        if (skip_naive)
+            printf("%-16s %8.2fG %12s %12.3f %10s %10.2f %9s  [%s]\n",
+                   c.name, flops/1e9, "--", t_sconv, "--", sconv_gf, "--", status);
+        else
+            printf("%-16s %8.2fG %12.3f %12.3f %10.2f %10.2f %9.2fx  [%s]\n",
+                   c.name, flops/1e9, t_naive, t_sconv, naive_gf, sconv_gf, speedup, status);
     }
 
-    printf("\nCorrectness: %d/%d passed\n", n_pass, n_total);
+    if (skip_naive)
+        printf("\nCorrectness: skipped (--skip-naive)\n");
+    else
+        printf("\nCorrectness: %d/%d passed\n", n_pass, n_total);
     return 0;
 }

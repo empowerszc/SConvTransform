@@ -1,4 +1,8 @@
+#ifdef USE_KBLAST
+#include <kblas.h>
+#else
 #include <cblas.h>
+#endif
 /* SConv microkernel: C[N,M] += B[K,N]^T * A[K,M]
    A = input tile [K,M] row-major (lda = M)
    B = filter tile [K,N] row-major (ldb = N)

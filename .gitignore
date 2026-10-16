@@ -3,3 +3,4 @@ test/res*
 test/out*
 test/log*
 native_impl/build/
+env.sh
