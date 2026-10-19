@@ -19,6 +19,12 @@ shim: kernel/sconv_sme_direct.o runtime/sconv_sme_shim.o test/shim_main.o
 	clang $(SME) $^ $(BUILTINS) -lpthread -o shim.out
 	@./shim.out
 
+e2e.out: kernel/sconv_sme_direct.o runtime/sconv_sme_shim.o test/shim_bench.o
+	clang $(SME) $^ $(BUILTINS) -lpthread -o e2e.out
+
+e2e: e2e.out
+	@./e2e.out bench
+
 runtime/%.o: runtime/%.c runtime/sme_abi.h
 	clang $(CFLAGS) -c $< -o $@
 
@@ -32,5 +38,5 @@ test/%.o: test/%.c test/harness.h
 	clang $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f kernel/*.ll kernel/*.o test/*.o runtime/*.o smoke.out direct.out shim.out
-.PHONY: all smoke direct bench shim clean
+	rm -f kernel/*.ll kernel/*.o test/*.o runtime/*.o smoke.out direct.out shim.out e2e.out
+.PHONY: all smoke direct bench shim e2e clean

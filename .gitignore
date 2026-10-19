@@ -9,8 +9,10 @@ __pycache__/
 *.pyc
 sme/smoke.out
 sme/shim.out
+sme/e2e.out
 sme/kernel/sme_smoke.ll
 sme/kernel/sme_smoke.o
 sme/test/shim_main.o
 sme/test/smoke_main.o
+sme/test/shim_bench.o
 scripts/bench_vs_torch/out/

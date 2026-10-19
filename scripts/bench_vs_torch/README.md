@@ -29,8 +29,9 @@ python3 scripts/bench_vs_torch/compare_vs_pytorch.py \
 
 ## 口径说明
 
-- `after`/`before` 为端到端（含 im2col 打包与解包），仅 `custom_9/custom_10` 为 **SME kernel-only**
-  （输入已 pad+pack、输出未 unpad，属乐观上界）。
+- `after`/`before` 为端到端（含 im2col 打包与解包）。`custom_9/custom_10` 优先用 **SME 端到端**
+  （`sme/e2e.out`，含 shim 权重打包/pad/unpad）；若不存在则退回 kernel-only 探针 `sme/direct.out`。
+  构建端到端基准：`cd sme && make e2e.out`。
 - `torch` 为端到端 `torch.nn.functional.conv2d`（`torch.set_num_threads(t)`）。
 - 运行需 `numactl`（可用 `--numa ''` 关闭）与可用的 torch 环境（`TORCH_PYTHON`）。
 

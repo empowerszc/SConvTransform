@@ -5,7 +5,8 @@ Three variants are collected (all GFLOPS, per thread count):
 
   torch  : torch.nn.functional.conv2d baseline (via torch_baseline.py)
   after  : native_impl build (parallel Bc prepack + adaptive (Nwin,Nf));
-           custom_9/custom_10 use the SME probe (kernel-only) instead.
+           custom_9/custom_10 use the SME end-to-end bench (sme/e2e.out, incl.
+           pad/pack/unpad) when available, else the kernel-only probe.
   before : OPTIONAL pre-optimization build (--before-binary); omitted if not given.
 
 Results are written to <out>/data.json as
@@ -85,6 +86,8 @@ def main():
     ap.add_argument("--before-binary", default=None,
                     help="optional pre-optimization sconv_bench")
     ap.add_argument("--sme-probe", default=None, help="default $root/sme/direct.out")
+    ap.add_argument("--sme-e2e", default=None,
+                    help="SME end-to-end bench (incl. pad/pack/unpad); default $root/sme/e2e.out")
     ap.add_argument("--torch-python", default=os.environ.get("TORCH_PYTHON", "python3"))
     ap.add_argument("--torch-script", default=os.path.join(HERE, "torch_baseline.py"))
     ap.add_argument("--threads", default="1,2,4,8,16,32,36")
@@ -97,6 +100,9 @@ def main():
 
     after = args.after_binary or os.path.join(args.root, "native_impl/build/sconv_bench")
     sme = args.sme_probe or os.path.join(args.root, "sme/direct.out")
+    sme_e2e = args.sme_e2e or os.path.join(args.root, "sme/e2e.out")
+    sme_bin = sme_e2e if os.path.exists(sme_e2e) else sme
+    print(f"  sme: {sme_bin} ({'end-to-end' if sme_bin == sme_e2e else 'kernel-only'})", flush=True)
     threads = [int(x) for x in args.threads.split(",")]
     numa = ["numactl", f"--cpunodebind={args.numa}", f"--membind={args.numa}"] if args.numa else []
     os.makedirs(args.out, exist_ok=True)
@@ -127,9 +133,9 @@ def main():
             if args.before_binary:
                 for nw, nf in ((32, 16), (64, 32)):
                     merge_best(gb, bench(args.before_binary, t, nw, nf))
-            if os.path.exists(sme):
-                merge_best(sv, parse_sme(run([*numa, sme, "bench", str(t)], env,
-                                             cwd=os.path.dirname(sme))))
+            if os.path.exists(sme_bin):
+                merge_best(sv, parse_sme(run([*numa, sme_bin, "bench", str(t)], env,
+                                             cwd=os.path.dirname(sme_bin))))
         for name in SME_CASES:
             if name in sv:
                 ga[name] = sv[name]
