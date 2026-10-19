@@ -343,8 +343,10 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
             nw = best_nw;
             nf = best_nf;
             tile_cache[key] = {nw, nf};
+            // Clear tuner leftovers so the (accumulating) run below starts clean.
+            // Only needed on a cache miss; doing it every call costs ~0.3ms.
+            std::memset(output.data.data(), 0, output.size_bytes());
         }
-        std::memset(output.data.data(), 0, output.size_bytes());
     }
     build_Bc(nf);
     if (autotune && getenv("SCONV_VERBOSE"))
