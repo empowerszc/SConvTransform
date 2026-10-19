@@ -100,6 +100,11 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
     static thread_local long long tl_pack_ns = 0, tl_gemm_ns = 0, tl_calls = 0;
     static thread_local long long tl_unpack_ns = 0;
     bool timing = getenv("SCONV_TIMING") != nullptr;
+    // Zero this thread's counters so each call reports its own breakdown
+    // (counters are static and otherwise accumulate across calls/configs).
+    auto reset_timing = [&]() {
+        if (timing) { tl_pack_ns = 0; tl_gemm_ns = 0; tl_unpack_ns = 0; tl_calls = 0; }
+    };
 
     // Filter pre-pack: Bc[ft][ic0][k=(ic_local*Fh+fh)*Fw+fw][nf], contiguous
     // slices (ldb = nf_str) → fast CblasTrans B operand for every sgemm.
@@ -264,11 +269,16 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
     };
 
         if (num_threads > 1) {
-#pragma omp parallel for schedule(dynamic) num_threads(num_threads)
-            for (int task = 0; task < totalL; task++) {
-                run_tile(task / nWinTilesL, task % nWinTilesL);
+#pragma omp parallel num_threads(num_threads)
+            {
+                reset_timing();
+#pragma omp for schedule(dynamic)
+                for (int task = 0; task < totalL; task++) {
+                    run_tile(task / nWinTilesL, task % nWinTilesL);
+                }
             }
         } else {
+            reset_timing();
             for (int task = 0; task < totalL; task++) {
                 run_tile(task / nWinTilesL, task % nWinTilesL);
             }
@@ -281,7 +291,13 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
     // reuse vs tile count. Pick (Nwin, Nf) per (shape, threads) by timing a
     // small grid once, then cache it. Bc is rebuilt for the chosen Nf.
     int nw = Nwin, nf = Nf;
-    if (Nwin <= 0 || Nf <= 0) {
+    bool autotune = (Nwin <= 0 || Nf <= 0);
+    if (autotune && getenv("SCONV_NO_AUTOTUNE")) {
+        if (nw <= 0) nw = 32;
+        if (nf <= 0) nf = 16;
+        autotune = false;
+    }
+    if (autotune) {
         static thread_local std::map<std::string, std::pair<int, int>> tile_cache;
         std::string key = std::to_string(N) + "_" + std::to_string(Ic) + "_" +
                           std::to_string(Ohw) + "_" + std::to_string(Oc) + "_" +
@@ -331,7 +347,7 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
         std::memset(output.data.data(), 0, output.size_bytes());
     }
     build_Bc(nf);
-    if ((Nwin <= 0 || Nf <= 0) && getenv("SCONV_VERBOSE"))
+    if (autotune && getenv("SCONV_VERBOSE"))
         fprintf(stderr, "  [auto] N=%d Ic=%d Ohw=%d Oc=%d -> Nwin=%d Nf=%d (threads=%d)\n",
                 N, Ic, Ohw, Oc, nw, nf, num_threads);
     run_pass(nw, nf);

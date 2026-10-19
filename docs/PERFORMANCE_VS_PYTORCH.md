@@ -248,10 +248,13 @@ cd native_impl && cmake -B build -S . -DUSE_KBLAST=ON -DCMAKE_BUILD_TYPE=Release
 numactl --cpunodebind=0 --membind=0 ./build/sconv_bench --filter common \
   --skip-naive --runs 8 --warmup 3 --nwin 0 --nf 0 --threads 32
 # 查看选中的 (Nwin,Nf)：加 SCONV_VERBOSE=1
-# 分阶段计时：SCONV_TIMING=1
+# 分阶段计时（每次调用独立）：SCONV_TIMING=1
+# 关闭自动调优（用固定 Nwin=32/Nf=16）：SCONV_NO_AUTOTUNE=1
 # SME kernel-only：cd sme && make direct.out && ./direct.out bench <threads>
 
-# torch 基线 / 全量对比：见附录 B 的两个脚本
+# torch 基线 / 全量对比：scripts/bench_vs_torch/（见附录 B）
+export SCONV_ROOT=$PWD TORCH_PYTHON=<torch 环境的 python>
+python3 scripts/bench_vs_torch/compare_vs_pytorch.py --threads 1,2,4,8,16,32,36
 ```
 
 ---
@@ -599,6 +602,9 @@ numactl --cpunodebind=0 --membind=0 ./build/sconv_bench --filter common \
 ---
 
 ## 附录 B：对比脚本
+
+> **正式脚本已入库**：`scripts/bench_vs_torch/`（`torch_baseline.py`、`compare_vs_pytorch.py`，用法见其 `README.md`）。
+> 下面的 B.1/B.2 是生成本文数据时的历史快照（含当时的临时路径），仅存档参考。
 
 ### B.1 `compare_final.py`（本方案 before/after 扫描；before=best of (32,16)/(64,32)，after=自动）
 

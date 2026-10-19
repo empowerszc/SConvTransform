@@ -13,3 +13,4 @@ sme/kernel/sme_smoke.ll
 sme/kernel/sme_smoke.o
 sme/test/shim_main.o
 sme/test/smoke_main.o
+scripts/bench_vs_torch/out/
