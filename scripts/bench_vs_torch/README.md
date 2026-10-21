@@ -16,12 +16,12 @@ export SCONV_ROOT=$PWD
 export TORCH_PYTHON=/home/z00889957/miniconda3/envs/torch210_env/bin/python
 
 # after = native_impl (并行 Bc + 自适应 Nwin/Nf)；custom_9/10 用 SME 探针(kernel-only)
-python3 scripts/bench_vs_torch/compare_vs_pytorch.py --threads 1,2,4,8,16,32,36
+python3 scripts/bench_vs_torch/compare_vs_pytorch.py --threads 1,2,4,8,16,32
 
 # 可选：与优化前的构建对比（另建一份未优化的 native_impl）
 python3 scripts/bench_vs_torch/compare_vs_pytorch.py \
   --before-binary /tmp/native_common/build/sconv_bench \
-  --threads 1,2,4,8,16,32,36
+  --threads 1,2,4,8,16,32
 ```
 
 参数：`--runs/--warmup/--repeats`（默认 8/3/3，取 best-of-repeats）、`--numa 0`（设为 `''` 关闭绑定）、

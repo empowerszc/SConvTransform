@@ -17,7 +17,7 @@ Example:
     export TORCH_PYTHON=/path/to/envs/torch210_env/bin/python
     python3 scripts/bench_vs_torch/compare_vs_pytorch.py \
         --before-binary /tmp/native_common/build/sconv_bench \
-        --threads 1,2,4,8,16,32,36
+        --threads 1,2,4,8,16,32
 """
 import argparse
 import json
@@ -90,7 +90,7 @@ def main():
                     help="SME end-to-end bench (incl. pad/pack/unpad); default $root/sme/e2e.out")
     ap.add_argument("--torch-python", default=os.environ.get("TORCH_PYTHON", "python3"))
     ap.add_argument("--torch-script", default=os.path.join(HERE, "torch_baseline.py"))
-    ap.add_argument("--threads", default="1,2,4,8,16,32,36")
+    ap.add_argument("--threads", default="1,2,4,8,16,32")
     ap.add_argument("--runs", type=int, default=8)
     ap.add_argument("--warmup", type=int, default=3)
     ap.add_argument("--repeats", type=int, default=3, help="best-of-N repeats per cell")
