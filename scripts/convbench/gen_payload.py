@@ -27,7 +27,13 @@ def main():
                 break
             phi = int(row["HI"]) + int(row["HPBOTTOM"]) + int(row["HPTOP"])
             pwi = int(row["WI"]) + int(row["WPLEFT"]) + int(row["WPRIGHT"])
-            flops = 2 * int(row["HO"]) * int(row["WO"]) * int(row["DO"]) * int(row["CI"]) * int(row["HK"]) * int(row["WK"])
+            # 2 * batch * Oh * Ow * Oc * Ic * Kh * Kw.
+            # NOTE: `NO` (output batch) was missing here until 2026-11-17, which
+            # understated GFLOPS by the batch factor for multi-batch payloads
+            # (speedup ratios were unaffected: baseline and SConv shared it).
+            batch = int(row.get("NO") or 1)
+            flops = (2 * batch * int(row["HO"]) * int(row["WO"]) * int(row["DO"])
+                     * int(row["CI"]) * int(row["HK"]) * int(row["WK"]))
             rep = {"{{" + k + "}}": row[k] for k in row}
             rep["{{PHI}}"] = str(phi)
             rep["{{PWI}}"] = str(pwi)

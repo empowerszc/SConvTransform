@@ -2,6 +2,10 @@
 
 > 本文探讨在支持 SVE (Scalable Vector Extension) 和 SME (Scalable Matrix Extension) 的
 > aarch64 CPU 上, SConvTransform 还有哪些优化空间, 以及大致的实现思路。
+>
+> **先读这两篇**：`docs/OPTIMIZATION_DESIGN_AND_RESULTS.md`（设计理念 + 已生效优化 + 已否决方向）
+> 与 `docs/FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`（「向量化打包 + 多核」的量化论证）。
+> 本文保留的是**方案层**的完整设想；其中若干预期已被目标机实测取代（见下表与 §3）。
 
 ---
 
@@ -11,11 +15,11 @@
 
 | # | 优化 | 状态 | 说明 |
 |---|------|------|------|
-| 1 | 多核并行 | **部分实现** | `native_impl` 已按 `batch×空间 tile` 多线程并行（GEMM 路径）；**MLIR/ConvBench 管线仍近单线程**，未做 `scf.for→scf.parallel`。 |
-| 2 | SME 微内核 | **部分实现** | `custom_9/custom_10` 走**手写 SME 直接卷积**（`sme/`，非 vector.contract→ArmSME 路线），已接入 ConvBench 自动路由；覆盖面仅 c9/c10。 |
-| 3 | 向量化打包 | **已评估/回退** | `native_impl` 对 `stride==1` 打包做 `std::copy` 向量化 A/B：**无收益**（带宽受限），已回退；MLIR 侧标量打包未动。 |
+| 1 | 多核并行 | **部分实现** | `native_impl` 已按 `batch×空间 tile` 多线程并行（GEMM 路径），t32 达 0.9–2.3 TFLOPS（不含 `r18_7` 这类 0.13 TF 的极小用例）；**MLIR/ConvBench 管线仍单线程**，未做 `scf.for→scf.parallel`。量化论证见 `FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`。 |
+| 2 | SME 微内核 | **部分实现** | `custom_9/custom_10` 走**手写 SME 直接卷积**（`sme/`，非 vector.contract→ArmSME 路线），已接入 ConvBench 自动路由；覆盖面仅 c9/c10。**实测不宜扩面**：c0/c2/c5/c7 的 SME kernel-only 均低于 GEMM。 |
+| 3 | 向量化打包 | **分路径结论** | `native_impl`：**已评估/回退** —— 三种写法同为 ~13 GB/s/core（带宽 roofline），无收益。MLIR 侧：**未做，且空间很大** —— 实测仅 ~0.48 GB/s（custom_0，约 26× 差距），见可行性论证。 |
 | 4 | 流水线 (ping-pong) | 未实现 | — |
-| 5 | 自动调参 | **部分实现** | `native_impl` 新增运行时 `(Nwin,Nf)` 自动调优（`--nwin 0 --nf 0`）；CSA 代价模型的 `arch_info` 调参未做。 |
+| 5 | 自动调参 | **已实现（超出原计划）** | `native_impl` 运行时自适应：`(Nwin,Nf)` 全形状调优 + 饥饿形状的 `Nc` 精调（≥3% 门槛、min-of-5 采样）。CSA 代价模型本身未改（`arch_info` 已用目标机真实 cache 值）。 |
 | 6 | NHWC 布局 | 未实现 | — |
 | 7 | 自动 padding | 未实现 | 仅 SME shim 内部做右下补零。 |
 
@@ -106,6 +110,15 @@ mlir-opt input.mlir \
 ### 预期收益
 
 4 核并行 → ~3x 加速 (考虑缓存竞争和同步开销); 10 核 → ~5-7x。
+
+### 目标机实测更新（2026-11）
+
+- `native_impl` 已实现该并行（`batch × 空间tile`，`schedule(dynamic)`）：38 核 node0 上，
+  `custom_0` 由 t1 99.5 GFLOPS 提升到 t32 1.7–2.1 TFLOPS（约 17–21×），与上表估计一致。
+- 并行度受 `任务数 = N·ceil(Ohw/Nwin)` 限制；batch=1 低分辨率用例必须缩小 `Nwin` 才有任务可分，
+  这是 `(Nwin,Nf)` 运行时自适应存在的原因。
+- **MLIR 管线仍是串行**：custom_0 单线程 156.6 ms / 27.1 GFLOPS（不含 batch 的旧口径会显示 6.78），
+  尚未并行。其量化空间与收益见 `FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`。
 
 ---
 
@@ -261,6 +274,16 @@ void packed_input_sve(float* dst, float* src, int nwin, int Iw, ...) {
 ### 预期收益
 
 打包阶段加速 4-8x (SVE 向量化), 减少内存复制量 50%+ (滑动窗口复用)。
+
+### 目标机实测更新（2026-11）—— 分两条路径，结论相反
+
+| 路径 | 实测 | 结论 |
+|---|---|---|
+| `native_impl` | 三种打包写法（标量 / `memcpy` / 合并写）均 **13.2 / 13.3 / 12.4 GB/s** | 已贴单核带宽 roofline，**无空间**（`std::copy` 特化已回退） |
+| MLIR 管线 | custom_0 的 `linalg.generic` 打包等效 **≈0.48 GB/s**（44.2 MB / ~92 ms） | 有 **~26×** 空间；但**不需要** SVE intrinsic，用连续行缓存 + `memcpy` 的运行时 helper 即可贴顶 |
+
+> 因此「向量化打包 4-8×」这个预期只在 **MLIR 侧**成立，且瓶颈是「逐元素 + 边界谓词」，
+> 不是「没用 SVE」。详见 `docs/FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`。
 
 ---
 
@@ -516,6 +539,14 @@ CSA 当前的代价模型只算 cache line 数量, 不考虑:
 
 根据硬件特性调参 → **1.2-2x** 加速 (取决于默认参数离最优有多远)。
 
+### 目标机实测更新（2026-11）
+
+- 已实现**运行时自适应**（无需重编译）：`(Nwin,Nf)` 全形状搜索 + `Nc` 精调（仅并行饥饿形状，
+  每个候选 min-of-5、需快 ≥3% 才替换默认）。收益：`r18_14` +24%、`r50_ds56` +12%、`r50_ds28` +9%（t32）。
+- `Nc` 若**无条件**搜索会回归（`thr_n8` 强制 32 时 −43%），故必须加形状门槛。
+- `arch_info` 本身已经是目标机真实值（L1 32 KB / L2 768 KB / L3=0 / line 128），
+  剩余偏差来自 `halfHeuristic` 只考虑 cache、不考虑并行任务数。
+
 ---
 
 ## 6. 内存布局优化 (NHWC)
@@ -585,6 +616,13 @@ padding 后: Oh×Ow = 5632 (= 352×16), 整除
 | **7. 自动 padding** | 低 | 1.1-1.3x | tiling 前加 `tensor.pad` | 无 |
 
 **如果全部实现, 理论加速比**: 3-7x (并行) × 10-20x (SME) × 2-4x (打包) × 1.4x (流水线) × 1.5x (调参+布局+padding) ≈ **125-588x** 相比当前单线程 OpenBLAS 版本。
+
+> **实测校正（2026-11）**：上面的乘法式是**方案初期的乐观估计**，不要当预算用。已知的反例：
+> ① SME 只在 `custom_9/10` 这类通道/输出铺得满的形状上赢，扩面即亏；
+> ② 打包向量化在 `native_impl` 已到带宽顶（0 收益），只在 MLIR 侧有空间；
+> ③ 调参收益是 +9%…+24%（分形状），不是 1.2–2×。
+> 实际可信的目标：**MLIR 管线单线程 5×、t32 追平 `native_impl` 的 0.5–1.0×**
+> （见 `docs/FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`）。
 
 实际上优化之间有重叠 (比如 SME 微内核可能已经包含向量化打包的效果), 合理预期:
 - **短期 (多核 + 调参)**: 当前 15 GFLOPS → 50-100 GFLOPS

@@ -91,6 +91,12 @@
 
 ## 5. 性能结果
 
+> **口径修正（2026-11-17）**：`scripts/convbench/gen_payload.py` 的 FLOPs 公式当年漏乘输出 batch
+> `NO`，因此下列表格中 **batch=4 的用例，GFLOPS 列被低估 4×**（`FLOPs` 列本身是对的，
+> 加速比列不受影响——两侧同乘一个常数）。例如 `custom_0` 的真实值是
+> 4.25 GFLOP / 77.8 ms ≈ **54.6 GFLOPS**（表中 13.65 × 4）。脚本已修复，
+> 但本节的表格保留 2026-09 的原始输出未重算。
+
 ### 5.1 自定义卷积 (11 个, warmup=1, runs=1)
 
 | 卷积 | FLOPs | Baseline (ms) | SConv+BLAS (ms) | Baseline GFLOPS | SConv+BLAS GFLOPS | 加速比 |
