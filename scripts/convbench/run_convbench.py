@@ -84,6 +84,14 @@ def build_runtime_libs():
                    f"-I{openblas_inc}", f"-L{openblas_lib}", "-lopenblas"]
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode: print(f"  WARN: sgemm_blas_kernel build failed: {r.stderr[:200]}")
+    # pack_input_tile: row-segmented input packing used by `lower.to_pack`.
+    pack_lib = os.path.join(BUILD_DIR, f"libpack_input_tile.{LIB_EXT}")
+    pack_src = os.path.join(RUNTIME_DIR, "pack_input_tile.c")
+    if (not os.path.exists(pack_lib)
+            or os.path.getmtime(pack_lib) < os.path.getmtime(pack_src)):
+        r = subprocess.run(["clang", "-shared", "-fPIC", "-O2", "-o", pack_lib, pack_src],
+                           capture_output=True, text=True)
+        if r.returncode: print(f"  WARN: pack_input_tile build failed: {r.stderr[:200]}")
     # sconv_sme_direct: ArmSME direct-conv kernel (MLIR) + C shim (pad/pack/threads).
     sme_lib = os.path.join(BUILD_DIR, f"libsconv_sme_direct.{LIB_EXT}")
     sme_dir = os.path.join(SCONV_ROOT, "sme")
@@ -104,14 +112,17 @@ def build_runtime_libs():
                    "-o", sme_lib, sme_shim, sme_obj, builtins, "-lpthread"]
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode: print(f"  WARN: sme shim build failed: {r.stderr[:300]}")
-    return rtclock_lib, blas_lib, sme_lib
+    return rtclock_lib, blas_lib, sme_lib, pack_lib
 
-def get_libs(rtclock_lib, blas_lib, sme_lib):
-    return ",".join([
+def get_libs(rtclock_lib, blas_lib, sme_lib, pack_lib=None):
+    libs = [
         f"{LLVM_DIR}/lib/libmlir_c_runner_utils.{LIB_EXT}",
         f"{LLVM_DIR}/lib/libmlir_runner_utils.{LIB_EXT}",
         rtclock_lib, blas_lib, sme_lib,
-    ])
+    ]
+    if pack_lib:
+        libs.append(pack_lib)
+    return ",".join(libs)
 
 def sh(cmd):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
@@ -255,11 +266,12 @@ if __name__ == "__main__":
     tf = os.path.abspath(args.transform)
 
     print("Building runtime libraries...")
-    rtclock_lib, blas_lib, sme_lib = build_runtime_libs()
-    libs = get_libs(rtclock_lib, blas_lib, sme_lib)
+    rtclock_lib, blas_lib, sme_lib, pack_lib = build_runtime_libs()
+    libs = get_libs(rtclock_lib, blas_lib, sme_lib, pack_lib)
     print(f"  rtclock: {rtclock_lib}")
     print(f"  blas:   {blas_lib}")
     print(f"  sme:    {sme_lib}")
+    print(f"  pack:   {pack_lib}")
     print(f"  transform: {tf}")
 
     # Generate payloads

@@ -7,6 +7,7 @@ add_mlir_library(
   SConv.cpp
   CSA.cpp
   LowerToBLAS.cpp
+  LowerToPack.cpp
   LowerToSME.cpp
 
   # Make includes visible without top-level path.

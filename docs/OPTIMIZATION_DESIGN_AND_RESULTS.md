@@ -40,10 +40,11 @@ scripts/convbench/runtime/sgemm_blas_kernel.c ← 单线程 cblas_sgemm 包装
 ```
 
 - 这是**论文/工程交付物**：验证 SConv 变换本身能否生成正确的优化循环。
-- 现状（custom_0）：**156.6 ms/iter，27.1 GFLOPS**（单线程）。
+- 现状（custom_0）：**M1 后 115.7 ms/iter，≈36.7 GFLOPS**（单线程；M1 前 156.6 ms/27.1 GF）。
   注意：ConvBench 表格里打印的 6.78 GFLOPS 是旧口径（FLOPs 漏乘 batch，见 §6.2），已修正为 4×。
 - 结构性问题：**微内核极窄**（`C[16,8] += A[216,16]^T B[216,8]`，每次 0.055 MFLOP，每轮卷积 **76,800 次调用**），
-  打包是逐元素标量搬运（按「总时间 − 实测 GEMM 下界」反推，等效约 **0.5 GB/s**，见可行性论证 §2.3）。
+  打包原为逐元素标量搬运。stub 内核实测的分解是 **GEMM ≈41% / 标量打包 ≈33% / 循环+分配 ≈26%**
+  （见可行性论证 §2.3），M1 已把打包换成运行时行分段拷贝并复用打包目标 buffer（见 §3.6）。
 
 ### 1.2 参考实现路径（`native_impl/`，性能探针）
 
@@ -191,6 +192,34 @@ CSA 的 `Nc` 来自 `halfHeuristic`：把可用 cache 切成两半后按 K 维�
 
 全部用例对 naive 参考逐元素校验 **PASS**（任意 tiling 都不改变语义）。
 
+### 3.6 MLIR 管线：快速输入打包 M1（`lib/LowerToPack.cpp` + `runtime/pack_input_tile.c`，2026-11）
+
+目标：把 MLIR 路径里逐元素标量 gather 的 `linalg.generic` 输入打包换成
+运行时行分段拷贝（与 `lower.to_blas` 同构）。
+
+实现三件套：
+1. **运行时 helper** `pack_input_tile()`：按 `(ic,fh,fw)` 把「同一输出行内连续」的
+   窗口段整段 `memcpy`/向量化搬走，避免逐元素 `tensor.extract` + div/mod 地址计算。
+2. **新 transform op** `transform.lower.to_pack`：匹配 `packing="input"` 的
+   `linalg.generic`，用「把 `linalg.index` 归零后重算既有 affine 链」得到 tile 首元素
+   偏移，再发 `llvm.call`。几何信息由 `sconv.pack_geom` 属性显式携带
+   （`[Ow,Iw,strideH,strideW,dilH,dilW]`），不依赖从 affine map 反推。
+3. **打包目标 buffer 上提复用**（`applyInputPacking`）：`tensor.empty` 形状循环不变，
+   提到最外层循环外，使 one-shot bufferize 只分配一次（原为 3200 次/迭代）。
+
+| 口径 | M1 前 | M1 后 |
+|---|--:|--:|
+| custom_0 单线程 | 156.6 ms | **115.7 ms（-26%）** |
+| 其中打包相关（残差法） | ≈52.6 ms | ≈16 ms（helper 独立微基准 15.5 ms / 2.85 GB/s） |
+
+- 收益的大头其实来自第 3 点（约 28 ms）：每迭代新建打包目标 buffer 会让每次写落到
+  **冷页**。只换 helper、不hoist 时只省 17 ms。
+- 未追到 13 GB/s 的原因：`Nwin=16` 每次只搬 64 B，且按 `(ic,fh,fw)` 重读输入行约 9×；
+  继续优化是可选后续，收益有限（见可行性论证 §4 杠杆 1）。
+- 验收：`scripts/convbench/test_fastpack.py --stage all`（IR / 逐元素正确性 / 性能）。
+  `ir` 检查不再有标量 input-packing generic、出现 `pack_input_tile`；`correct` 对
+  custom_0/custom_5 做 rtol/atol 1e-3 比对；`perf` 预算 **≤125 ms/iter**。
+
 ---
 
 ## 4. 被否决 / 被证伪的方向（同样是结论）
@@ -250,6 +279,8 @@ t36 稳定 1650–1760，IQR ±3–5%）。已排除 pool 原语、绑核、DVFS
 | 想改什么 | 文件 | 关键位置 / 开关 |
 |---|---|---|
 | 算法级 tiling / packing / 微内核替换 | `lib/SConv.cpp`、`lib/LowerToBLAS.cpp` | `applyTileTo()`、`scf::tileUsingSCF`、`LowerToBLASOp::apply()` |
+| 快速输入打包（M1） | `lib/LowerToPack.cpp`、`scripts/convbench/runtime/pack_input_tile.c`、`test/lowering/sconv-blas-fastp.mlir` | `LowerToPackOp::apply`、`applyInputPacking`（buffer 上提）、`pack_input_tile()` |
+| 打包验收门槛 | `scripts/convbench/test_fastpack.py` | `--stage ir\|correct\|perf`；`PERF_BUDGET_MS` |
 | SME 路由决策 | `lib/LowerToSME.cpp` | `SMESelectOp::apply`、`min_ic`/`max_oc` 门槛 |
 | 参考实现的并行/调优 | `native_impl/src/sconv.cpp` | `build_Bc`、`run_pass`、自适应块、`SCONV_*` 环境变量 |
 | CSA 启发式 | `native_impl/src/sconv_csa.h`、`lib/CSA.cpp` | `halfHeuristic`（Nc/K2/K3） |

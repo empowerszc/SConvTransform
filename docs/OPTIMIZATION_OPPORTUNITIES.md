@@ -9,7 +9,7 @@
 
 ---
 
-## 实施状态（2026-10-16 更新）
+## 实施状态（2026-11-17 更新）
 
 > 目标机实测与优化前后结果见 `docs/PERFORMANCE_VS_PYTORCH.md`；本文各项的当前落地情况：
 
@@ -17,7 +17,7 @@
 |---|------|------|------|
 | 1 | 多核并行 | **部分实现** | `native_impl` 已按 `batch×空间 tile` 多线程并行（GEMM 路径），t32 达 0.9–2.3 TFLOPS（不含 `r18_7` 这类 0.13 TF 的极小用例）；**MLIR/ConvBench 管线仍单线程**，未做 `scf.for→scf.parallel`。量化论证见 `FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`。 |
 | 2 | SME 微内核 | **部分实现** | `custom_9/custom_10` 走**手写 SME 直接卷积**（`sme/`，非 vector.contract→ArmSME 路线），已接入 ConvBench 自动路由；覆盖面仅 c9/c10。**实测不宜扩面**：c0/c2/c5/c7 的 SME kernel-only 均低于 GEMM。 |
-| 3 | 向量化打包 | **分路径结论** | `native_impl`：**已评估/回退** —— 三种写法同为 ~13 GB/s/core（带宽 roofline），无收益。MLIR 侧：**未做，且空间很大** —— 实测仅 ~0.48 GB/s（custom_0，约 26× 差距），见可行性论证。 |
+| 3 | 向量化打包 | **MLIR 侧已交付（M1）** | `native_impl`：**已评估/回退**（三写法同速 ~13 GB/s/core，带宽 roofline）。MLIR 侧：`transform.lower.to_pack` + 运行时 `pack_input_tile()` 取代标量 gather，并把打包目标 buffer 上提复用；custom_0 **156.6 → 115.7 ms（-26%）**。helper 独立微基准 2.85 GB/s（`Nwin=16` 只有 64 B 段 + 9× 重读），未追到 13 GB/s，收益已有限。 |
 | 4 | 流水线 (ping-pong) | 未实现 | — |
 | 5 | 自动调参 | **已实现（超出原计划）** | `native_impl` 运行时自适应：`(Nwin,Nf)` 全形状调优 + 饥饿形状的 `Nc` 精调（≥3% 门槛、min-of-5 采样）。CSA 代价模型本身未改（`arch_info` 已用目标机真实 cache 值）。 |
 | 6 | NHWC 布局 | 未实现 | — |
@@ -117,8 +117,8 @@ mlir-opt input.mlir \
   `custom_0` 由 t1 99.5 GFLOPS 提升到 t32 1.7–2.1 TFLOPS（约 17–21×），与上表估计一致。
 - 并行度受 `任务数 = N·ceil(Ohw/Nwin)` 限制；batch=1 低分辨率用例必须缩小 `Nwin` 才有任务可分，
   这是 `(Nwin,Nf)` 运行时自适应存在的原因。
-- **MLIR 管线仍是串行**：custom_0 单线程 156.6 ms / 27.1 GFLOPS（不含 batch 的旧口径会显示 6.78），
-  尚未并行。其量化空间与收益见 `FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`。
+- **MLIR 管线仍是串行**：custom_0 单线程 M1 后 **115.7 ms / ≈36.7 GFLOPS**（M1 前 156.6 ms / 27.1 GF；
+  不含 batch 的旧口径会显示 6.78），尚未并行。其量化空间与收益见 `FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`。
 
 ---
 
@@ -280,10 +280,11 @@ void packed_input_sve(float* dst, float* src, int nwin, int Iw, ...) {
 | 路径 | 实测 | 结论 |
 |---|---|---|
 | `native_impl` | 三种打包写法（标量 / `memcpy` / 合并写）均 **13.2 / 13.3 / 12.4 GB/s** | 已贴单核带宽 roofline，**无空间**（`std::copy` 特化已回退） |
-| MLIR 管线 | custom_0 的 `linalg.generic` 打包等效 **≈0.48 GB/s**（44.2 MB / ~92 ms） | 有 **~26×** 空间；但**不需要** SVE intrinsic，用连续行缓存 + `memcpy` 的运行时 helper 即可贴顶 |
+| MLIR 管线（M1 前） | custom_0 标量打包等效 **≈0.84 GB/s**（stub 实测 ≈52.6 ms / 44.2 MB） | 有空间；用运行时行分段拷贝即可，**不需要** SVE intrinsic |
+| MLIR 管线（M1 后） | helper 独立微基准 **15.5 ms / 2.85 GB/s**；整体 156.6 → **115.7 ms** | 已取掉主要浪费；未到 13 GB/s 是 64 B 段 + 9× 重读，边际收益有限 |
 
-> 因此「向量化打包 4-8×」这个预期只在 **MLIR 侧**成立，且瓶颈是「逐元素 + 边界谓词」，
-> 不是「没用 SVE」。详见 `docs/FEASIBILITY_VECTORIZED_PACK_MULTICORE.md`。
+> 因此「向量化打包 4-8×」这个预期只在 **MLIR 侧**成立，且瓶颈是「逐元素 + 边界谓词 + 每迭代分配」，
+> 不是「没用 SVE」。详见 `docs/FEASIBILITY_VECTORIZED_PACK_MULTICORE.md` 与设计文档 §3.6。
 
 ---
 

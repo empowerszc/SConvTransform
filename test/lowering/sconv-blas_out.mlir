@@ -25,31 +25,31 @@ module {
     %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<1x256x64x64xf32>
     memref.copy %arg2, %alloc_0 : memref<1x256x64x64xf32, strided<[?, ?, ?, ?], offset: ?>> to memref<1x256x64x64xf32>
     %reinterpret_cast = memref.reinterpret_cast %alloc_0 to offset: [0], sizes: [1, 256, 4096], strides: [1048576, 4096, 1] : memref<1x256x64x64xf32> to memref<1x256x4096xf32>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<1x32x3x3x16xf32>
     %0 = scf.for %arg3 = %c0 to %c1 step %c1 iter_args(%arg4 = %reinterpret_cast) -> (memref<1x256x4096xf32>) {
       %1 = scf.for %arg5 = %c0 to %c128 step %c32 iter_args(%arg6 = %arg4) -> (memref<1x256x4096xf32>) {
         %2 = scf.for %arg7 = %c0 to %c4096 step %c1024 iter_args(%arg8 = %arg6) -> (memref<1x256x4096xf32>) {
           %3 = scf.for %arg9 = %c0 to %c256 step %c256 iter_args(%arg10 = %arg8) -> (memref<1x256x4096xf32>) {
-            %base_buffer_2, %offset_3, %sizes_4:3, %strides_5:3 = memref.extract_strided_metadata %arg10 : memref<1x256x4096xf32> -> memref<f32>, index, index, index, index, index, index, index
+            %base_buffer_3, %offset_4, %sizes_5:3, %strides_6:3 = memref.extract_strided_metadata %arg10 : memref<1x256x4096xf32> -> memref<f32>, index, index, index, index, index, index, index
             %4 = affine.apply #map()[%arg3, %arg9, %arg7]
-            %reinterpret_cast_6 = memref.reinterpret_cast %base_buffer_2 to offset: [%4], sizes: [1, 256, 1024], strides: [1048576, 4096, 1] : memref<f32> to memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>>
-            %alloc_7 = memref.alloc() {alignment = 64 : i64} : memref<32x32x3x3x8xf32>
-            linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]} outs(%alloc_7 : memref<32x32x3x3x8xf32>) attrs =  {multipacking = true, packing = "filter"} {
+            %reinterpret_cast_7 = memref.reinterpret_cast %base_buffer_3 to offset: [%4], sizes: [1, 256, 1024], strides: [1048576, 4096, 1] : memref<f32> to memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>>
+            %alloc_8 = memref.alloc() {alignment = 64 : i64} : memref<32x32x3x3x8xf32>
+            linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]} outs(%alloc_8 : memref<32x32x3x3x8xf32>) attrs =  {multipacking = true, packing = "filter"} {
             ^bb0(%out: f32):
               %6 = linalg.index 0 : index
               %7 = linalg.index 1 : index
               %8 = linalg.index 2 : index
               %9 = linalg.index 3 : index
               %10 = linalg.index 4 : index
-              %base_buffer_8, %offset_9, %sizes_10:4, %strides_11:4 = memref.extract_strided_metadata %arg1 : memref<256x128x3x3xf32, strided<[?, ?, ?, ?], offset: ?>> -> memref<f32>, index, index, index, index, index, index, index, index, index
-              %11 = affine.apply #map2()[%offset_9, %arg9, %strides_11#0, %arg5, %strides_11#1]
-              %12 = affine.apply #map3(%6, %10)[%11, %strides_11#0, %7, %strides_11#1, %8, %strides_11#2, %9, %strides_11#3]
-              %reinterpret_cast_12 = memref.reinterpret_cast %base_buffer_8 to offset: [%12], sizes: [1, 1, 1, 1], strides: [%strides_11#0, %strides_11#1, %strides_11#2, %strides_11#3] : memref<f32> to memref<1x1x1x1xf32, strided<[?, ?, ?, ?], offset: ?>>
-              %13 = memref.load %reinterpret_cast_12[%c0, %c0, %c0, %c0] : memref<1x1x1x1xf32, strided<[?, ?, ?, ?], offset: ?>>
+              %base_buffer_9, %offset_10, %sizes_11:4, %strides_12:4 = memref.extract_strided_metadata %arg1 : memref<256x128x3x3xf32, strided<[?, ?, ?, ?], offset: ?>> -> memref<f32>, index, index, index, index, index, index, index, index, index
+              %11 = affine.apply #map2()[%offset_10, %arg9, %strides_12#0, %arg5, %strides_12#1]
+              %12 = affine.apply #map3(%6, %10)[%11, %strides_12#0, %7, %strides_12#1, %8, %strides_12#2, %9, %strides_12#3]
+              %reinterpret_cast_13 = memref.reinterpret_cast %base_buffer_9 to offset: [%12], sizes: [1, 1, 1, 1], strides: [%strides_12#0, %strides_12#1, %strides_12#2, %strides_12#3] : memref<f32> to memref<1x1x1x1xf32, strided<[?, ?, ?, ?], offset: ?>>
+              %13 = memref.load %reinterpret_cast_13[%c0, %c0, %c0, %c0] : memref<1x1x1x1xf32, strided<[?, ?, ?, ?], offset: ?>>
               linalg.yield %13 : f32
             }
-            %5 = scf.for %arg11 = %c0 to %c1024 step %c16 iter_args(%arg12 = %reinterpret_cast_6) -> (memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>>) {
-              %alloc_8 = memref.alloc() {alignment = 64 : i64} : memref<1x32x3x3x16xf32>
-              linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]} outs(%alloc_8 : memref<1x32x3x3x16xf32>) attrs =  {multipacking = false, packing = "input"} {
+            %5 = scf.for %arg11 = %c0 to %c1024 step %c16 iter_args(%arg12 = %reinterpret_cast_7) -> (memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>>) {
+              linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]} outs(%alloc_1 : memref<1x32x3x3x16xf32>) attrs =  {multipacking = false, packing = "input", sconv.pack_geom = array<i64: 64, 66, 1, 1, 1, 1>} {
               ^bb0(%out: f32):
                 %7 = linalg.index 0 : index
                 %8 = linalg.index 1 : index
@@ -63,10 +63,10 @@ module {
                 %15 = memref.load %reinterpret_cast_10[%c0, %c0, %c0] : memref<1x1x1xf32, strided<[557568, 4356, 1], offset: ?>>
                 linalg.yield %15 : f32
               }
-              %reinterpret_cast_9 = memref.reinterpret_cast %alloc_8 to offset: [0], sizes: [1, 288, 16], strides: [4608, 16, 1] : memref<1x32x3x3x16xf32> to memref<1x288x16xf32>
+              %reinterpret_cast_9 = memref.reinterpret_cast %alloc_1 to offset: [0], sizes: [1, 288, 16], strides: [4608, 16, 1] : memref<1x32x3x3x16xf32> to memref<1x288x16xf32>
               %6 = scf.for %arg13 = %c0 to %c256 step %c8 iter_args(%arg14 = %arg12) -> (memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>>) {
                 %7 = affine.apply #map7(%arg13)
-                %reinterpret_cast_10 = memref.reinterpret_cast %alloc_7 to offset: [%7], sizes: [288, 8], strides: [8, 1] : memref<32x32x3x3x8xf32> to memref<288x8xf32, strided<[8, 1], offset: ?>>
+                %reinterpret_cast_10 = memref.reinterpret_cast %alloc_8 to offset: [%7], sizes: [288, 8], strides: [8, 1] : memref<32x32x3x3x8xf32> to memref<288x8xf32, strided<[8, 1], offset: ?>>
                 %base_buffer_11, %offset_12, %sizes_13:3, %strides_14:3 = memref.extract_strided_metadata %arg14 : memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>> -> memref<f32>, index, index, index, index, index, index, index
                 %8 = affine.apply #map8()[%offset_12, %arg13, %arg11]
                 %reinterpret_cast_15 = memref.reinterpret_cast %base_buffer_11 to offset: [%8], sizes: [1, 8, 16], strides: [1048576, 4096, 1] : memref<f32> to memref<1x8x16xf32, strided<[1048576, 4096, 1], offset: ?>>
@@ -96,7 +96,7 @@ module {
               }
               scf.yield %6 : memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>>
             }
-            memref.copy %5, %reinterpret_cast_6 : memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>> to memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>>
+            memref.copy %5, %reinterpret_cast_7 : memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>> to memref<1x256x1024xf32, strided<[1048576, 4096, 1], offset: ?>>
             scf.yield %arg10 : memref<1x256x4096xf32>
           }
           scf.yield %3 : memref<1x256x4096xf32>
@@ -106,8 +106,8 @@ module {
       scf.yield %1 : memref<1x256x4096xf32>
     }
     %base_buffer, %offset, %sizes:3, %strides:3 = memref.extract_strided_metadata %0 : memref<1x256x4096xf32> -> memref<f32>, index, index, index, index, index, index, index
-    %reinterpret_cast_1 = memref.reinterpret_cast %base_buffer to offset: [0], sizes: [1, 256, 64, 64], strides: [1048576, 4096, 64, 1] : memref<f32> to memref<1x256x64x64xf32>
-    return %reinterpret_cast_1 : memref<1x256x64x64xf32>
+    %reinterpret_cast_2 = memref.reinterpret_cast %base_buffer to offset: [0], sizes: [1, 256, 64, 64], strides: [1048576, 4096, 64, 1] : memref<f32> to memref<1x256x64x64xf32>
+    return %reinterpret_cast_2 : memref<1x256x64x64xf32>
   }
   llvm.func @sgemm_blas_kernel(i64, i64, i64, f32, !llvm.ptr, !llvm.ptr, !llvm.ptr, i64) -> i32
 }

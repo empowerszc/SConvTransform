@@ -81,6 +81,30 @@ def LowerToBlasOp : Op<Transform_Dialect, "lower.to_blas",
   let hasVerifier = 1;
 }
 
+def LowerToPackOp : Op<Transform_Dialect, "lower.to_pack",
+    [DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Lower an input-packing generic to a fast runtime packing call.";
+  let description = [{
+    Replaces a bufferized input-packing `linalg.generic` (the one tagged with
+    `packing = "input"`, `multipacking = false` and `sconv.pack_geom`) by a call
+    to a row-segmented C implementation (`pack_input_tile`) that reaches
+    memory-copy throughput instead of the scalar gather emitted by the generic.
+
+    The generic's per-element index chain is preserved exactly: the call takes
+    the offset of the tile's first element (evaluated by zeroing the tile
+    indices of the existing affine apply chain) plus the relative geometry from
+    `sconv.pack_geom`.
+  }];
+  let arguments = (ins
+    StrAttr:$name,
+    TransformHandleTypeInterface:$target
+  );
+  let results = (outs TransformHandleTypeInterface:$output);
+  let assemblyFormat = "$name `,` $target attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
 def LowerToSMEOp : Op<Transform_Dialect, "lower.to_sme",
     [DeclareOpInterfaceMethods<TransformOpInterface>,
      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
