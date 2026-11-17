@@ -298,15 +298,18 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
         autotune = false;
     }
     if (autotune) {
-        static thread_local std::map<std::string, std::pair<int, int>> tile_cache;
+        struct Tune { int nw, nf, nc; };
+        static thread_local std::map<std::string, Tune> tile_cache;
         std::string key = std::to_string(N) + "_" + std::to_string(Ic) + "_" +
                           std::to_string(Ohw) + "_" + std::to_string(Oc) + "_" +
                           std::to_string(strideH) + "_" + std::to_string(Fh) + "_" +
                           std::to_string(Fw) + "_" + std::to_string(num_threads);
         auto itc = tile_cache.find(key);
         if (itc != tile_cache.end()) {
-            nw = itc->second.first;
-            nf = itc->second.second;
+            nw = itc->second.nw;
+            nf = itc->second.nf;
+            Nc = itc->second.nc;
+            nIc = (Ic + Nc - 1) / Nc;
         } else {
             int hiw = std::max(8, ((Ohw + 7) / 8) * 8);
             int hif = std::max(8, Oc);
@@ -316,6 +319,7 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
             int best_nw = 16, best_nf = std::min(16, hif);
             bool saved = timing;
             timing = false;  // don't pollute SCONV_TIMING with tuning passes
+            // Stage 1: (Nwin, Nf) grid at the CSA-default Nc.
             for (int fi = 0; fi < 2; fi++) {
                 int cf = std::min(candsF[fi], hif);
                 if (fi > 0 && cf == std::min(candsF[fi - 1], hif)) continue;
@@ -328,7 +332,7 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
                     std::memset(output.data.data(), 0, output.size_bytes());
                     run_pass(cw, cf);  // warm
                     double c_ms = 1e300;
-                    for (int rep = 0; rep < 2; rep++) {
+                    for (int rep = 0; rep < 5; rep++) {
                         std::memset(output.data.data(), 0, output.size_bytes());
                         auto s0 = std::chrono::steady_clock::now();
                         run_pass(cw, cf);
@@ -339,10 +343,47 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
                     if (c_ms < best_ms) { best_ms = c_ms; best_nw = cw; best_nf = cf; }
                 }
             }
+            // Stage 2: Nc refinement, only for parallel-starved shapes (where the
+            // window-tile count < threads, so the channel block matters most).
+            // The CSA tile_c heuristic uses a generic cache model; on starved
+            // shapes the real optimum swings +5..+23%. Require a 3% win to switch
+            // (protects against timing noise), and always keep the default.
+            int best_nc = Nc;
+            int winTiles = (Ohw + best_nw - 1) / best_nw;
+            bool starved = (long)N * winTiles < num_threads;
+            if (starved) {
+                int base_nc = Nc;
+                const int candsC[4] = {base_nc, 16, 32, 64};
+                for (int ci = 0; ci < 4; ci++) {
+                    int cc = std::min(candsC[ci], Ic);
+                    if (cc < 1) cc = 1;
+                    bool dup = false;
+                    for (int pj = 0; pj < ci; pj++)
+                        if (std::min(candsC[pj], Ic) == cc) dup = true;
+                    if (dup) continue;
+                    Nc = cc;
+                    nIc = (Ic + Nc - 1) / Nc;
+                    build_Bc(best_nf);
+                    std::memset(output.data.data(), 0, output.size_bytes());
+                    run_pass(best_nw, best_nf);  // warm
+                    double c_ms = 1e300;
+                    for (int rep = 0; rep < 5; rep++) {
+                        std::memset(output.data.data(), 0, output.size_bytes());
+                        auto s0 = std::chrono::steady_clock::now();
+                        run_pass(best_nw, best_nf);
+                        double ms = std::chrono::duration<double, std::milli>(
+                                        std::chrono::steady_clock::now() - s0).count();
+                        if (ms < c_ms) c_ms = ms;
+                    }
+                    if (c_ms < best_ms * 0.97) { best_ms = c_ms; best_nc = cc; }
+                }
+            }
+            Nc = best_nc;
+            nIc = (Ic + Nc - 1) / Nc;
             timing = saved;
             nw = best_nw;
             nf = best_nf;
-            tile_cache[key] = {nw, nf};
+            tile_cache[key] = Tune{nw, nf, Nc};
             // Clear tuner leftovers so the (accumulating) run below starts clean.
             // Only needed on a cache miss; doing it every call costs ~0.3ms.
             std::memset(output.data.data(), 0, output.size_bytes());
@@ -350,8 +391,8 @@ void conv2d_sconv(const Tensor& input, const Tensor& weight, Tensor& output,
     }
     build_Bc(nf);
     if (autotune && getenv("SCONV_VERBOSE"))
-        fprintf(stderr, "  [auto] N=%d Ic=%d Ohw=%d Oc=%d -> Nwin=%d Nf=%d (threads=%d)\n",
-                N, Ic, Ohw, Oc, nw, nf, num_threads);
+        fprintf(stderr, "  [auto] N=%d Ic=%d Ohw=%d Oc=%d -> Nwin=%d Nf=%d Nc=%d (threads=%d)\n",
+                N, Ic, Ohw, Oc, nw, nf, Nc, num_threads);
     run_pass(nw, nf);
     if (timing) {
         long long pack_ns = 0, gemm_ns = 0, calls = 0, unpack_ns = 0;
