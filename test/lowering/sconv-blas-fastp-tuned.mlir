@@ -1,12 +1,15 @@
-// Tuned fast path (M2): same as sconv-blas-fastp.mlir but with a wider
-// microkernel tile, mK_info = [Nwin=64, Nf=32].
+// Explicitly-pinned wide tile: same as sconv-blas-fastp.mlir but with
+// mK_info = [Nwin=64, Nf=32], no autotuning.
 //
-// Measured on custom_0 (single thread, node0): 115.7 -> ~87 ms/iter.
-// CAVEAT: the tile is not shape-universal. Nwin=64 must divide the output
-// spatial size for good behavior; on small/irregular shapes it falls into the
-// edge path and can regress badly (custom_5: 229 -> 6227 ms). Use per shape,
-// or wait for the mK_info autotuner. The default fast path stays
-// sconv-blas-fastp.mlir (mK_info = [16, 8]) until then.
+// Kept as a benchmarking escape hatch / reference point: the default fast path
+// now passes [0, 0] and picks this exact tile automatically on regular shapes
+// (and something narrower on irregular ones). Use this file only when you want
+// to force [64,32] regardless of shape, e.g. to reproduce the M2 measurements.
+//
+// CAVEAT: forcing the tile is not shape-universal. Nwin=64 must divide the
+// output spatial size and Nf=32 must divide the filter count; otherwise the
+// pipeline falls into the edge path and can regress badly (custom_5: 229 ->
+// 6227 ms; custom_7: 36 -> 216 ms). Prefer sconv-blas-fastp.mlir.
 
 module attributes {transform.with_named_sequence} {
 

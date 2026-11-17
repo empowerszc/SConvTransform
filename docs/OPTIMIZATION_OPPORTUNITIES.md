@@ -19,7 +19,7 @@
 | 2 | SME 微内核 | **部分实现** | `custom_9/custom_10` 走**手写 SME 直接卷积**（`sme/`，非 vector.contract→ArmSME 路线），已接入 ConvBench 自动路由；覆盖面仅 c9/c10。**实测不宜扩面**：c0/c2/c5/c7 的 SME kernel-only 均低于 GEMM。 |
 | 3 | 向量化打包 | **MLIR 侧已交付（M1）** | `native_impl`：**已评估/回退**（三写法同速 ~13 GB/s/core，带宽 roofline）。MLIR 侧：`transform.lower.to_pack` + 运行时 `pack_input_tile()` 取代标量 gather，并把打包目标 buffer 上提复用；custom_0 **156.6 → 115.7 ms（-26%）**。helper 独立微基准 2.85 GB/s（`Nwin=16` 只有 64 B 段 + 9× 重读），未追到 13 GB/s，收益已有限。 |
 | 4 | 流水线 (ping-pong) | 未实现 | — |
-| 5 | 自动调参 | **已实现（超出原计划）** | `native_impl` 运行时自适应：`(Nwin,Nf)` 全形状调优 + 饥饿形状的 `Nc` 精调（≥3% 门槛、min-of-5 采样）。CSA 代价模型本身未改（`arch_info` 已用目标机真实 cache 值）。 |
+| 5 | 自动调参 | **已实现** | `native_impl`：运行时自适应，`(Nwin,Nf)` 全形状调优 + 饥饿形状的 `Nc` 精调（≥3% 门槛、min-of-5 采样）。MLIR 侧：`mK_info=[0,0]` 按形状选最大整除因子（`selectAutoNwin/Nf`），规则形状自动取 `[64,32]`、不规则形状退回较窄 tile；11/11 形状优于 `[16,8]`，无回退。CSA 代价模型本身未改（`arch_info` 已用目标机真实 cache 值）。 |
 | 6 | NHWC 布局 | 未实现 | — |
 | 7 | 自动 padding | 未实现 | 仅 SME shim 内部做右下补零。 |
 

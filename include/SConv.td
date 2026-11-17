@@ -46,6 +46,11 @@ def SConvOp : Op<Transform_Dialect, "structured.sconv",
   //   mK_info = { nwindows, num_filters }
   //   arch_info = { l1size, l2size, l3size, cache_line }
   //   latency = { l1_latency, l2_latency, l3_latency, mem_latency }
+  //
+  // A zero in `mK_info` selects the value automatically for each convolution
+  // from its shape: `mK_info = [0, 0]` picks the widest window/filter tile that
+  // divides the output spatial size and the filter count. Explicit values are
+  // used as given.
 
   // The handle must implement TransformHandleTypeInterface.   
 

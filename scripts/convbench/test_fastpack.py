@@ -5,21 +5,26 @@ Stages (run in this order; each is a separate check):
   ir       the transform replaces the input-packing `linalg.generic`
            with a `pack_input_tile` call
   correct  elementwise match vs the untouched lowering (rtol/atol 1e-3)
-  perf     custom_0 per-iteration time <= 125 ms (was 156.6 ms pre-M1)
+  perf     custom_0 per-iteration time <= 105 ms
+
+The default transform (`sconv-blas-fastp.mlir`) passes `mK_info = [0, 0]`, so
+the mK autotuner picks the widest tile that divides each shape. On custom_0
+that is [64,32] (~87 ms/iter); on irregular shapes it degrades instead of
+falling into the edge path. The autotuner itself is covered by
+scripts/convbench/test_mk_auto.py; this gate keeps checking that the fast
+packing path stays wired up and correct on a regular and an edge-prone shape.
 
 Set SCONV_FASTP_TF to test a different transform, e.g.
-test/lowering/sconv-blas-fastp-tuned.mlir (M2, ~87 ms on custom_0 but only for
-shapes whose spatial size is divisible by Nwin=64; it regresses small shapes).
+test/lowering/sconv-blas-fastp-tuned.mlir (forces [64,32]; regresses shapes
+whose spatial size is not a multiple of 64).
 
 Note on budgets: the original 75 ms figure assumed the whole non-GEMM residual
 (~94.6 ms) was input packing. Measured decomposition says otherwise: with both
 the GEMM and the pack kernels stubbed the loop/alloc/copy floor alone is ~36 ms,
 and the GEMM is ~66 ms, so 75 ms is only reachable once M2 (Nf 8->32) shrinks the
-microkernel count and widens the GEMM. M1's own acceptance is the fast pack plus
-the hoisted scratch buffer, which lands custom_0 at ~115 ms/iter.
-
-Usage:
-  python3 scripts/convbench/test_fastpack.py [--stage ir|correct|perf|all]
+microkernel count and widens the GEMM. Even with the autotuner the residual is
+per-iteration index math (~33 ms) plus a memory-bound GEMM (~46 ms), so the
+budget here guards against regressions rather than aiming at 75.
 """
 import argparse
 import os
@@ -34,13 +39,17 @@ FAST_TF = os.environ.get(
     "SCONV_FASTP_TF",
     os.path.join(R.SCONV_ROOT, "test/lowering/sconv-blas-fastp.mlir"))
 CSV = os.path.join(R.SCONV_ROOT, "scripts/convbench/samples/custom_conv.csv")
-# M1 acceptance (fast pack + hoisted scratch). Median ~115 ms/iter, noise ~±2%.
-PERF_BUDGET_MS = 125.0
-# Long-standing target. M2 (tile widening) did not reach it: even the tuned
-# [64,32] config lands at ~85 ms because the residual is per-iteration index
-# math (~33 ms) plus a memory-bound GEMM (~46 ms). See design doc §3.7.
+# Autotuned default (~87 ms/iter median on custom_0). 105 leaves room for the
+# ±4-7% machine noise while still failing if the tuner falls back to [16,8].
+PERF_BUDGET_MS = 105.0
+# Long-standing target. Not reachable by tile selection: even [64,32] lands at
+# ~87 ms because the residual is per-iteration index math (~33 ms) plus a
+# memory-bound GEMM (~46 ms). See design doc §3.7/§3.8.
 POST_M2_TARGET_MS = 75.0
-CASES = ["custom_0", "custom_5"]
+# custom_0: regular shape -> autotuner picks [64,32].
+# custom_5: fn=48 -> must pick Nf=16, not 32 (regression guard).
+# custom_7: Ohw=400 -> must pick Nwin=16, not 64 (regression guard).
+CASES = ["custom_0", "custom_5", "custom_7"]
 
 
 def fail(msg):
@@ -131,7 +140,7 @@ def stage_perf():
     print(f"PASS: perf — custom_0 {per_iter:.1f} ms/iter (<= {PERF_BUDGET_MS})")
     if per_iter > POST_M2_TARGET_MS:
         print(f"      note: {POST_M2_TARGET_MS} ms target not reached by tile "
-              f"tuning; needs index hoisting / cache blocking (design §3.7)")
+              f"tuning; needs index hoisting / cache blocking (design §3.7/§3.8)")
     return 0
 
 

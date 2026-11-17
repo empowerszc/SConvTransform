@@ -1,3 +1,16 @@
+// Default SConv fast path.
+//
+// mK_info = [0, 0] enables the shape-based autotuner: the compiler picks the
+// widest window/filter tile that divides the output spatial size and the filter
+// count (see selectAutoNwin/selectAutoNf in lib/SConv.cpp). For regular shapes
+// this selects [Nwin=64, Nf=32], which measured 115.7 -> ~87 ms/iter on
+// custom_0; for shapes where 64/32 would hit the edge path it degrades to
+// [16,32]/[64,16]/[16,8] instead of regressing. All 11 custom shapes improve
+// over the old fixed [16,8] tile (docs/OPTIMIZATION_DESIGN_AND_RESULTS.md §3.8).
+//
+// test/lowering/sconv-blas-fastp-tuned.mlir pins [64,32] explicitly as an
+// escape hatch for benchmarking.
+
 module attributes {transform.with_named_sequence} {
 
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
@@ -9,6 +22,7 @@ module attributes {transform.with_named_sequence} {
       : (!transform.any_op) -> !transform.op<"linalg.conv_2d_nchw_fchw">
 
     %ukernels_0, %loops = transform.structured.sconv %convs
+      { mK_info = [0, 0] }
       : (!transform.op<"linalg.conv_2d_nchw_fchw">) 
       -> (!transform.op<"linalg.generic">, !transform.any_op)
 

@@ -2265,6 +2265,40 @@ treatEdgeTileConvolution(RewriterBase &rewriter, Operation *transformOp, Operati
   return success();
 }
 
+/// @brief Choose the microkernel window tile for a shape when `mK_info`
+/// requests it automatically (a zero `Nwin`).
+///
+/// The `[64, 32]` tile is the fastest configuration measured on this machine,
+/// but it is only fast when the tiling is *exact*: a `Nwin` that does not
+/// divide `Oh*Ow` sends the pipeline down the edge path, which costs far more
+/// than the wider tile saves (custom_7, `Ohw=400` with `Nwin=64`: 36 -> 216 ms).
+/// Taking the largest divisor of the spatial size keeps the wide tile on
+/// regular shapes and degrades gracefully instead of falling off a cliff.
+/// `16` is the historical default and the finest granularity the edge handler
+/// is written around; if even 16 does not divide, the existing edge path takes
+/// over as before.
+static int64_t selectAutoNwin(int64_t ohw) {
+  for (int64_t candidate : {64, 32, 16})
+    if (ohw >= candidate && ohw % candidate == 0)
+      return candidate;
+  return 16;
+}
+
+/// @brief Choose the filter tile for a shape when `mK_info` requests it
+/// automatically (a zero `Nf`).
+///
+/// Same reasoning as selectAutoNwin(): `Nf=32` halves the number of
+/// microkernel calls versus `8`, but a non-dividing `Nf` triggers the filter
+/// edge path (custom_5, `fn=48` with `Nf=32`: 229 -> 6227 ms). Pick the
+/// largest divisor; `8` is the historical default. If even 8 does not divide,
+/// the existing filter edge path takes over as before.
+static int64_t selectAutoNf(int64_t fn) {
+  for (int64_t candidate : {32, 16, 8})
+    if (fn % candidate == 0)
+      return candidate;
+  return 8;
+}
+
 /// @brief Entry point of the SConv transformation pipeline.
 ///
 /// Implements the full SConv workflow over a linalg convolution payload:
@@ -2326,6 +2360,12 @@ transform::SConvOp::apply(transform::TransformRewriter &rewriter,
       }
     }
     if (mKValues.size() >= 2) {
+      // A zero in either slot is the "auto" sentinel: the effective tile for
+      // that slot is chosen per convolution from its shape, see
+      // selectAutoNwin()/selectAutoNf(). Passing `mK_info = [0, 0]` therefore
+      // keeps the wide-tile fast path on regular shapes and falls back to the
+      // safe historical tile on shapes where the wide tile would hit the edge
+      // path.
       mK.nwindows = mKValues[0];
       mK.num_filters = mKValues[1];
       mK.noutput = mK.nwindows * mK.num_filters;
@@ -2478,7 +2518,18 @@ transform::SConvOp::apply(transform::TransformRewriter &rewriter,
 
     // Call the CSA Analysis
     ConvInfo csaConv = {ic, iw, oh, ow, fh, fw, fn, 0, 0, 4};
-    CSA csa = createCSAPass(arch, csaConv, mK);
+
+    // Resolve a per-shape `mK_info` before CSA runs: zero slots mean "auto".
+    // The choice is per convolution because one transform may match several
+    // convolutions with different shapes.
+    mKInfo convMK = mK;
+    if (convMK.nwindows == 0)
+      convMK.nwindows = selectAutoNwin(oh * ow);
+    if (convMK.num_filters == 0)
+      convMK.num_filters = selectAutoNf(fn);
+    convMK.noutput = convMK.nwindows * convMK.num_filters;
+
+    CSA csa = createCSAPass(arch, csaConv, convMK);
     CSAStrategy res = csa();
     
     LLVM_DEBUG({
@@ -2489,7 +2540,7 @@ transform::SConvOp::apply(transform::TransformRewriter &rewriter,
     });
 
     // check if has edge case of input or filter in the kernel.
-    bool hasEdgeCase = ((oh * ow) % mK.nwindows != 0) || (fn % mK.num_filters != 0);
+    bool hasEdgeCase = ((oh * ow) % convMK.nwindows != 0) || (fn % convMK.num_filters != 0);
     if (hasEdgeCase) {
       if (failed(treatEdgeTileConvolution(rewriter, getOperation(), genericOp, csaConv, csa, res, strides, dilations, tempResultLoops, tempResultConvs)))
         return emitSilenceableError() << "Failed to treat ukernel edge cases to on of the convolution operation";
