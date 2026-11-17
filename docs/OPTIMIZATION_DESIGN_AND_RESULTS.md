@@ -220,6 +220,45 @@ CSA 的 `Nc` 来自 `halfHeuristic`：把可用 cache 切成两半后按 K 维�
   `ir` 检查不再有标量 input-packing generic、出现 `pack_input_tile`；`correct` 对
   custom_0/custom_5 做 rtol/atol 1e-3 比对；`perf` 预算 **≤125 ms/iter**。
 
+### 3.7 MLIR 管线：微内核 tile 放大 M2（`inputMultipackingOpt` + `lower.to_pack`，2026-11）
+
+M2 本想把微内核从 `m16/n8/k216` 放大到更宽的 `n`（Nf 8→32）。实测发现两件事：
+
+1. **`Nf>8` 必然切到 WS + multipacking**：只要 `mK_info=[16,Nf]` 里 Nf>8，CSA 就选
+   WS，输入打包变成 multipacking（形状 `[1, Ti, Nc, Fh, Fw, Nwin]`）。M1 的 helper
+   只认单打包，所以 `lower.to_pack` 必须先支持 multipacking。
+2. **放大 tile 的收益受「内存带宽」限制，不是 GEMM 算力**：warm-cache 微基准里
+   `m16/n32/k108` 只要 21 ms（201 GF），但 in-situ 的 GEMM 仍是 ~50–60 ms——
+   打包后的 A、输出 C 都放不进 L2（768 KB），每轮都在 DRAM 上读写。
+
+已实现：
+- `inputMultipackingOpt` 也写 `sconv.pack_geom`，并把 multipacked scratch 上提到最外层复用；
+- `lower.to_pack` 支持 `multipacking=true`，目标形状 `[1, Ti, Nc, Fh, Fw, Nwin]`；
+- `pack_input_tile` 增加 `ni`（窗口 tile 数）：以 `t` 为外层、`w=t*Nwin+nwin` 复用同一
+  行分段公式，目标块对每个 `t` 连续。
+
+custom_0 实测（单线程，node0，ms/iter）：
+
+| 配置 | 总时 | 说明 |
+|---|--:|---|
+| M1 `[16,8]` | 115.7 | IS，单打包 |
+| Nf=32 `[16,32]` | 111.5 | WS，multipacking |
+| Nf=64 `[16,64]` | 102.7 | |
+| **`[64,32]`** | **≈84–87** | 最优 |
+| `[64,64]` / `[80,32]` | 244 / 117 | 变差 |
+
+`[64,32]` 分解：循环/index 地板 ≈33.5、打包 ≈8.8、GEMM ≈46（warm-cache 本可 ~25）。
+
+> **结论（重要）**：`≤75 ms` 这个目标**没有达到**，且单纯调 tile 到不了：
+> 残差是「每微内核迭代的 index 计算 ≈33 ms」+「内存带宽受限的 GEMM ≈46 ms」。
+> 要再往下，需要 (a) 把每迭代的 `extract_strided_metadata`/`affine.apply` 提到循环外，
+> 或 (b) 改循环序/分块让 A、C 留在 L2。这两项都不是 mK 调参能解决的。
+>
+> **且 `[64,32]` 不能全局写死**：它要求 `Nwin=64` 整除输出空间尺寸，否则落入 edge 路径，
+> 实测 custom_5 从 229 → **6227 ms**、custom_7 从 36 → 216 ms。因此只作为**按形状可选**
+> 的 tuned 变体（`test/lowering/sconv-blas-fastp-tuned.mlir`），默认快路径仍用 `[16,8]`。
+> 要安全采用，需要像 `native_impl` 那样的 mK_info 自动调优（下一步）。
+
 ---
 
 ## 4. 被否决 / 被证伪的方向（同样是结论）
@@ -279,7 +318,7 @@ t36 稳定 1650–1760，IQR ±3–5%）。已排除 pool 原语、绑核、DVFS
 | 想改什么 | 文件 | 关键位置 / 开关 |
 |---|---|---|
 | 算法级 tiling / packing / 微内核替换 | `lib/SConv.cpp`、`lib/LowerToBLAS.cpp` | `applyTileTo()`、`scf::tileUsingSCF`、`LowerToBLASOp::apply()` |
-| 快速输入打包（M1） | `lib/LowerToPack.cpp`、`scripts/convbench/runtime/pack_input_tile.c`、`test/lowering/sconv-blas-fastp.mlir` | `LowerToPackOp::apply`、`applyInputPacking`（buffer 上提）、`pack_input_tile()` |
+| 快速输入打包（M1/M2） | `lib/LowerToPack.cpp`、`scripts/convbench/runtime/pack_input_tile.c`、`test/lowering/sconv-blas-fastp*.mlir` | `LowerToPackOp::apply`、`applyInputPacking`/`inputMultipackingOpt`（buffer 上提）、`pack_input_tile()` |
 | 打包验收门槛 | `scripts/convbench/test_fastpack.py` | `--stage ir\|correct\|perf`；`PERF_BUDGET_MS` |
 | SME 路由决策 | `lib/LowerToSME.cpp` | `SMESelectOp::apply`、`min_ic`/`max_oc` 门槛 |
 | 参考实现的并行/调优 | `native_impl/src/sconv.cpp` | `build_Bc`、`run_pass`、自适应块、`SCONV_*` 环境变量 |

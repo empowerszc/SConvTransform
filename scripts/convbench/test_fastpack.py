@@ -7,6 +7,10 @@ Stages (run in this order; each is a separate check):
   correct  elementwise match vs the untouched lowering (rtol/atol 1e-3)
   perf     custom_0 per-iteration time <= 125 ms (was 156.6 ms pre-M1)
 
+Set SCONV_FASTP_TF to test a different transform, e.g.
+test/lowering/sconv-blas-fastp-tuned.mlir (M2, ~87 ms on custom_0 but only for
+shapes whose spatial size is divisible by Nwin=64; it regresses small shapes).
+
 Note on budgets: the original 75 ms figure assumed the whole non-GEMM residual
 (~94.6 ms) was input packing. Measured decomposition says otherwise: with both
 the GEMM and the pack kernels stubbed the loop/alloc/copy floor alone is ~36 ms,
@@ -26,12 +30,15 @@ sys.path.insert(0, HERE)
 
 import run_convbench as R  # noqa: E402
 
-FAST_TF = os.path.join(R.SCONV_ROOT, "test/lowering/sconv-blas-fastp.mlir")
+FAST_TF = os.environ.get(
+    "SCONV_FASTP_TF",
+    os.path.join(R.SCONV_ROOT, "test/lowering/sconv-blas-fastp.mlir"))
 CSV = os.path.join(R.SCONV_ROOT, "scripts/convbench/samples/custom_conv.csv")
 # M1 acceptance (fast pack + hoisted scratch). Median ~115 ms/iter, noise ~±2%.
 PERF_BUDGET_MS = 125.0
-# Target to re-enable after M2 (Nf 8->32) shrinks the microkernel overhead and
-# widens the GEMM; not reachable by packing changes alone.
+# Long-standing target. M2 (tile widening) did not reach it: even the tuned
+# [64,32] config lands at ~85 ms because the residual is per-iteration index
+# math (~33 ms) plus a memory-bound GEMM (~46 ms). See design doc §3.7.
 POST_M2_TARGET_MS = 75.0
 CASES = ["custom_0", "custom_5"]
 
@@ -123,8 +130,8 @@ def stage_perf():
         return fail(f"custom_0 {per_iter:.1f} ms/iter > budget {PERF_BUDGET_MS} ms")
     print(f"PASS: perf — custom_0 {per_iter:.1f} ms/iter (<= {PERF_BUDGET_MS})")
     if per_iter > POST_M2_TARGET_MS:
-        print(f"      note: post-M2 target is {POST_M2_TARGET_MS} ms/iter "
-              f"(needs Nf 8->32, not a packing change)")
+        print(f"      note: {POST_M2_TARGET_MS} ms target not reached by tile "
+              f"tuning; needs index hoisting / cache blocking (design §3.7)")
     return 0
 
 

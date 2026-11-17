@@ -8,9 +8,10 @@
 //
 // This file defines the `transform.lower.to_pack` operation of the SConv
 // transform dialect extension. It replaces a bufferized *input-packing*
-// `linalg.generic` (the one produced by `applyInputPacking`, tagged with
-// `packing = "input"`, `multipacking = false` and `sconv.pack_geom`) with a call
-// to a row-segmented C implementation.
+// `linalg.generic` (produced either by `applyInputPacking` with
+// `multipacking = false`, or by `inputMultipackingOpt` with `multipacking =
+// true`; both tagged `packing = "input"` and `sconv.pack_geom`) with a call to a
+// row-segmented C implementation.
 //
 // Why: the generic is a scalar gather with per-element affine index math
 // (floordiv/floormod by the output width, a `memref.reinterpret_cast` and a
@@ -57,7 +58,7 @@ using LLVMCallOp = LLVM::CallOp;
 namespace {
 
 /// Number of i64 scalars passed to the runtime packing helper.
-constexpr unsigned kNumScalars = 13;
+constexpr unsigned kNumScalars = 14;
 
 static FailureOr<LLVMFuncOp> getOrCreatePackFuncOp(TransformRewriter &rewriter,
                                                    LowerToPackOp lowering,
@@ -171,10 +172,9 @@ static FailureOr<Operation *> lowerPackingToCall(TransformRewriter &rewriter,
     return packingOp.emitError() << "expected `packing` attribute";
   if (packingOp->getAttrOfType<StringAttr>("packing").getValue() != "input")
     return packingOp.emitError() << "only `packing = \"input\"` is supported";
-  if (auto mp = packingOp->getAttrOfType<BoolAttr>("multipacking");
-      mp && mp.getValue())
-    return packingOp.emitError()
-           << "multipacking is not supported by `lower.to_pack`";
+  bool isMulti = false;
+  if (auto mp = packingOp->getAttrOfType<BoolAttr>("multipacking"))
+    isMulti = mp.getValue();
 
   auto geomAttr = packingOp->getAttrOfType<DenseI64ArrayAttr>("sconv.pack_geom");
   if (!geomAttr || geomAttr.size() != 6)
@@ -186,17 +186,28 @@ static FailureOr<Operation *> lowerPackingToCall(TransformRewriter &rewriter,
   int64_t strideH = geom[2], strideW = geom[3];
   int64_t dilationH = geom[4], dilationW = geom[5];
 
-  // Destination tile: [1, Nc, Fh, Fw, Nwin].
+  // Destination tile:
+  //   single packing: [1, Nc, Fh, Fw, Nwin]
+  //   multi  packing: [1, Ni, Nc, Fh, Fw, Nwin]
   Value dst = packingOp.getOutputs().front();
   auto dstTy = dyn_cast<MemRefType>(dst.getType());
-  if (!dstTy || dstTy.getRank() != 5 || !dstTy.hasStaticShape())
-    return packingOp.emitError()
-           << "expected a rank-5 static destination tile [1, Nc, Fh, Fw, Nwin]";
+  if (!dstTy || !dstTy.hasStaticShape())
+    return packingOp.emitError() << "expected a static destination tile";
   ArrayRef<int64_t> dstShape = dstTy.getShape();
-  if (dstShape[0] != 1)
-    return packingOp.emitError() << "expected destination batch dim == 1";
-  int64_t Nc = dstShape[1], Fh = dstShape[2], Fw = dstShape[3];
-  int64_t Nwin = dstShape[4];
+  int64_t Ni = 1, Nc, Fh, Fw, Nwin;
+  if (isMulti) {
+    if (dstShape.size() != 6 || dstShape[0] != 1)
+      return packingOp.emitError()
+             << "expected a rank-6 destination tile "
+                "[1, Ni, Nc, Fh, Fw, Nwin]";
+    Ni = dstShape[1], Nc = dstShape[2], Fh = dstShape[3];
+    Fw = dstShape[4], Nwin = dstShape[5];
+  } else {
+    if (dstShape.size() != 5 || dstShape[0] != 1)
+      return packingOp.emitError()
+             << "expected a rank-5 destination tile [1, Nc, Fh, Fw, Nwin]";
+    Nc = dstShape[1], Fh = dstShape[2], Fw = dstShape[3], Nwin = dstShape[4];
+  }
 
   // Source: the padded input plane read by the generic.
   ReinterpretCastOp rc = findLoadedReinterpretCast(packingOp);
@@ -252,9 +263,9 @@ static FailureOr<Operation *> lowerPackingToCall(TransformRewriter &rewriter,
 
   auto call = rewriter.create<LLVMCallOp>(
       packingOp.getLoc(), *callee,
-      ValueRange{dstPtr, srcPtr, off0, i64(Nc), i64(Fh), i64(Fw), i64(Nwin),
-                 i64(Ow), i64(Iw), i64(strideH), i64(strideW), i64(dilationH),
-                 i64(dilationW), i64(srcCStride), srcRemain});
+      ValueRange{dstPtr, srcPtr, off0, i64(Nc), i64(Fh), i64(Fw), i64(Ni),
+                 i64(Nwin), i64(Ow), i64(Iw), i64(strideH), i64(strideW),
+                 i64(dilationH), i64(dilationW), i64(srcCStride), srcRemain});
 
   rewriter.eraseOp(packingOp);
   return call.getOperation();

@@ -1199,7 +1199,24 @@ inputMultipackingOpt(RewriterBase &rewriter, Operation *transformOp, ConvInfo cs
   int64_t Nwin = csa.mK_.nwindows;
 
   SmallVector<int64_t, 6> inputPackingShape = {Ni, Ti, Nc, Fh, Fw, Nwin};
-  Value inputPacking = rewriter.create<tensor::EmptyOp>(loc, inputPackingShape, inputType.getElementType());
+  // Hoist the multipacked scratch buffer out of the loop nest (same rationale
+  // as applyInputPacking): the shape is loop-invariant and every pack fully
+  // overwrites it before the consuming microkernels run, so one buffer can be
+  // reused across the (n, ic0) iterations.
+  Operation *outermostLoop = outerLoop;
+  while (outermostLoop->getParentOp()) {
+    Operation *parent = outermostLoop->getParentOp();
+    if (!isa<scf::ForOp>(parent))
+      break;
+    outermostLoop = parent;
+  }
+  Value inputPacking;
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(outermostLoop);
+    inputPacking = rewriter.create<tensor::EmptyOp>(
+        loc, inputPackingShape, inputType.getElementType());
+  }
 
   auto nloops = inputPackingShape.size();
   auto parallel = utils::IteratorType::parallel;
@@ -1233,6 +1250,10 @@ inputMultipackingOpt(RewriterBase &rewriter, Operation *transformOp, ConvInfo cs
 
   newPackingTensor->setAttrs(rewriter.getNamedAttr("packing", rewriter.getStringAttr("input")));
   newPackingTensor->setAttr("multipacking", rewriter.getBoolAttr(true));
+  // Geometry needed by `transform.lower.to_pack` (see applyInputPacking).
+  newPackingTensor->setAttr("sconv.pack_geom",
+      rewriter.getDenseI64ArrayAttr({ow, iw, strides[0], strides[1],
+                                     dilations[0], dilations[1]}));
 
   // Create the affine.apply at beginning of innerLoop body
   // to indexing the new inputSlice
