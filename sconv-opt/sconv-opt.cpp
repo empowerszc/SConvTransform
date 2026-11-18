@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "SConv.h"
+#include "SConvPasses.h"
 
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/Utils.h"
@@ -20,6 +21,8 @@
 #include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "llvm/Support/CommandLine.h"
@@ -79,6 +82,31 @@ struct MlirSConvOptCLOptions {
   cl::opt<bool> dumpLibraryModule{
       "dump-library-module",
       cl::desc("Prints the combined library module before the output"),
+      cl::init(false)};
+
+  /// Rewrite the tile loops tagged with `sconv.parallel` into `scf.parallel`
+  /// and privatize the packing scratch buffers per thread, after the transform
+  /// script has run.  This is the first half of the multicore pipeline; the
+  /// rest is `--convert-scf-to-openmp` in the lowering driver.
+  cl::opt<bool> parallelize{
+      "sconv-parallelize",
+      cl::desc("Parallelize the SConv tile loops after applying the "
+               "transform (multicore mode)"),
+      cl::init(false)};
+
+  cl::opt<unsigned> maxThreads{
+      "sconv-max-threads",
+      cl::desc("Number of per-thread scratch slots in multicore mode"),
+      cl::init(64)};
+
+  /// Lower the payload to LLVM dialect in-process after the transform (and the
+  /// optional parallelization).  This is the multicore half of the pipeline:
+  /// it differs from the serial `mlir-opt` sequence only by
+  /// `convert-scf-to-openmp` and the `memref.alloca_scope` cleanup that must
+  /// run before the CFG lowering.
+  cl::opt<bool> lowerParallel{
+      "sconv-lower-parallel",
+      cl::desc("Lower the transformed payload for the OpenMP runtime"),
       cl::init(false)};
 };
 } // namespace
@@ -304,6 +332,44 @@ static llvm::LogicalResult processPayloadBuffer(
   if (mlir::failed(applyTransforms(*payloadRoot, entryPoint, transformOptions)))
     return sourceMgr.checkResult(mlir::failure());
 
+  // Optionally parallelize the tile loops of the bufferized payload.
+  if (clOptions->parallelize) {
+    mlir::PassManager passManager(&context);
+    passManager.addPass(
+        mlir::createSConvParallelizePass(clOptions->maxThreads));
+    if (mlir::failed(passManager.run(*payloadRoot)))
+      return sourceMgr.checkResult(mlir::failure());
+  }
+
+  // Optionally run the multicore lowering pipeline in-process.
+  if (clOptions->lowerParallel) {
+    // The alloca_scope cleanup has to run between the OpenMP conversion and the
+    // CFG lowering; everything else mirrors the serial `mlir-opt` sequence.
+    static const char *kParallelPipeline =
+        "convert-scf-to-openmp,"
+        "canonicalize,"
+        "sconv-erase-alloca-scope,"
+        "convert-linalg-to-affine-loops,"
+        "canonicalize,cse,"
+        "expand-strided-metadata,"
+        "lower-affine,"
+        "convert-scf-to-cf,"
+        "normalize-memrefs,memref-expand,"
+        "finalize-memref-to-llvm,"
+        "lower-affine,"
+        "convert-func-to-llvm,convert-arith-to-llvm,"
+        "convert-openmp-to-llvm,"
+        "convert-cf-to-llvm,"
+        "canonicalize,cse,symbol-dce,"
+        "llvm-legalize-for-export";
+    mlir::PassManager passManager(&context);
+    if (mlir::failed(
+            mlir::parsePassPipeline(kParallelPipeline, passManager)))
+      return sourceMgr.checkResult(mlir::failure());
+    if (mlir::failed(passManager.run(*payloadRoot)))
+      return sourceMgr.checkResult(mlir::failure());
+  }
+
   // Print the transformed result and check the captured diagnostics if
   // requested.
   payloadRoot->print(os);
@@ -323,6 +389,7 @@ static llvm::LogicalResult runMain(int argc, char **argv) {
   registerSConv(registry);
 
   mlir::registerAllPasses();
+  mlir::registerSConvPasses();
 
   // Explicitly register the transform dialect. This is not strictly necessary
   // since it has been already registered as part of the upstream dialect list,
@@ -385,9 +452,13 @@ static llvm::LogicalResult runMain(int argc, char **argv) {
     }
   }
 
-  return processPayloadBuffer(outputFile->os(), std::move(payloadFile),
-                              std::move(transformRootFile), transformLibraries,
-                              registry);
+  llvm::LogicalResult result =
+      processPayloadBuffer(outputFile->os(), std::move(payloadFile),
+                           std::move(transformRootFile), transformLibraries,
+                           registry);
+  if (llvm::succeeded(result))
+    outputFile->keep();
+  return result;
 }
 
 int main(int argc, char **argv) {

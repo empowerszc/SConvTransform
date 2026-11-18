@@ -2,9 +2,10 @@
 
 > 结论前置：**值得做，但只对 MLIR/ConvBench 管线有意义**；`native_impl` 侧已经没有空间。
 > 建议按「打包向量化 → 微内核 tile 放大 → 多核」三步走，预计 5–9 人日。
-> **2026-11-18 更新**：单线程已从 156.6 ms 降到 **41 ms（custom_0，≈3.8×）**，
-> 11 形状对 PyTorch t1 的 geomean 已达 **1.35×**（10/11 ≥1.0×）。
-> 剩余目标只剩 t32：预期 0.9–1.7 TFLOPS，验收线 800 GF。
+> **2026-11-18 更新（2.0 GHz 重测）**：单线程已从 156.6 ms 降到 **33.3 ms
+> （custom_0，≈4.7×）**，11 形状对 PyTorch t1 的 geomean 达 **1.57×**（10/11 ≥1.0×）；
+> 多核 M3 已正式落地，单 NUMA **geomean 2.36×**、最高 338 GF。
+> 唯一未达的验收是 t32 ≥800 GF，原因是并行宽度只有 5–20（§5、计划文档 §9.4）。
 >
 > 相关：`docs/OPTIMIZATION_DESIGN_AND_RESULTS.md`（设计理念与已生效优化）、
 > `docs/PERFORMANCE_VS_PYTORCH.md`（权威数据）。
@@ -17,9 +18,9 @@
 |---|---|
 | 方向对不对 | 对。但收益的主体不是「向量化打包」，而是**「打包向量化 + 微内核放大 + 多核」三者叠加**。 |
 | 作用对象 | 仅 **MLIR/ConvBench 管线**（当前单线程、打包 ~0.8 GB/s）。`native_impl` 打包已贴 13 GB/s 带宽上限，做了也白做。 |
-| 预期收益 | M1+M2+A **已实测 -44%**（156.6→87 ms）；**A+C+G（2026-11-18）再降到 41 ms / ≈104 GF**，单线程相对原始基线 **-74%（3.8×）**，11 形状 geomean **1.35× vs PyTorch t1**。t32 若并行 ~10×，落到 **0.9–1.7 TFLOPS**（投影）。 |
-| 主要风险 | MLIR 的 `scf.for → OpenMP` lowering 是否顺手（最大不确定性）；其余风险可控。 |
-| 建议 | 先做 M1（打包 helper，**已交付**）+ M2（tile），这两步低风险；M3（多核）单独立项验证。 |
+| 预期收益（已兑现） | M1+M2+A **实测 -44%**（156.6→87 ms）；**A+C+G 再降到 33.3 ms / 127.7 GF**，单线程相对原始基线 **-79%（4.7×）**，geomean **1.57× vs PyTorch t1**；**M3 多核 geomean 2.36×、最高 338 GF**。原投影「t32 0.9–1.7 TFLOPS」**没有兑现**，因为并行宽度只有 5–20。 |
+| 主要风险 | MLIR 的 `scf.for → OpenMP` lowering（已解决，见 §6.1 与计划文档 §9.5）；剩下的风险是并行宽度/串行项，属结构性。 |
+| 建议 | M1/M2/A/C/G/M3 均已交付。下一步做 M4「加宽」（归约环内移 / 窗口组入链 / 多核专用 `Nwin`），加线程已无收益。 |
 
 ---
 
@@ -163,7 +164,7 @@ oc_outer   : 0..192 step 192         (1)      ← K2·Nf 覆盖整个 Oc
 
 ---
 
-## 5. 现状与预期（M1/M2 已实测，M3 为投影）
+## 5. 现状与预期（M1/M2/A/C/G/M3 均已实测，2.0 GHz）
 
 | 阶段 | 措施 | 单线程 | t32 |
 |---|---|---|--:|--:|
@@ -171,22 +172,27 @@ oc_outer   : 0..192 step 192         (1)      ← K2·Nf 覆盖整个 Oc
 | **M1（已实测）** | 打包 helper + 打包目标 buffer 复用 | **115.7 ms / ≈36.7 GF** | — |
 | **M2（已实测）** | + multipacking 支持 + `mK_info=[64,32]` | **≈84–87 ms / ≈49 GF** | — |
 | **A（已实测）** | + `mK_info=[0,0]` 形状自适应（最大整除因子） | **≈87 ms / ≈49 GF**，11/11 改善且无回退 | — |
-| **A+C+G（已实测，2026-11-18）** | 快速 `memrefCopy` + 宽 tile `Nc` 自适应 + 窗口 tile 160 | **41 ms / ≈104 GF**；geomean **1.35× vs torch t1**，10/11 ≥1.0× | torch t1 |
-| M2 原目标 | （投影） | ≤75 ms | — |
-| M3（投影） | + 多核（有效 8–16×） | — | **2.5–4 ms / 0.9–1.7 TFLOPS** |
+| **A+C+G（已实测，2026-11-18，2.0 GHz 重测）** | 快速 `memrefCopy` + 宽 tile `Nc` 自适应 + 窗口 tile 160 | **33.3 ms / 127.7 GF**；geomean **1.57× vs torch t1**，10/11 ≥1.0× | — |
+| **M3（已实测，2026-11-18）** | 窗口 tile 循环 → `scf.parallel` → OpenMP + per-thread scratch | 串行 34.4 ms | **t16 16.2 ms / 269 GF；geomean 2.36×，最高 338 GF（custom_1）** |
+| M2 原目标 | （投影） | ≤75 ms（实际 87，已越过） | — |
+| M3 原目标 | （投影） | — | 800 GF × 3 形状、≥0.5× `native_impl` t32（**未达**，见下） |
 
+- 上表的绝对 ms 是 **2.0 GHz** 口径；白天 1.55 GHz 时代的同一批数字是
+  41 ms / 104 GF / 1.35×（差异来自同频重测，见 `OPTIMIZATION_PLAN_2026-11-18.md` 开头）。
 - **M1 实测 115.7 ms（-26%）**。原估算「≈70 ms」偏乐观：残差里约 42 ms 是循环/分配地板，
   单靠打包到不了 70。
 - **M2 实测 ≈84–87 ms（-46% vs 原基线）**，但**没到 75**。当时归因（index ≈33 ms）
   已被推翻：真实构成是边界 copy ≈24 ms + 输入打包 ≈7.7 ms + filter 打包 ≈3.7 ms +
-  GEMM ≈43 ms（设计文档 §3.9）。**A+C 已把 87 → 40 ms，G 再把它稳在 41 ms**。
+  GEMM ≈43 ms（设计文档 §3.9）。**A+C 已把 87 → 40 ms，G 再把它稳在 41 ms**
+  （1.55 GHz；2.0 GHz 下终值 33.3 ms）。
 - **`[64,32]` 不能全局写死**：要求 `Nwin=64` 整除输出空间尺寸、`Nf=32` 整除滤波器数，
   否则落入 edge 路径（custom_5: 229→6227 ms；custom_7: 36→216 ms）。
   **A 已解决**：默认快路径传 `mK_info=[0,0]`，按形状选最大整除因子；11/11 形状
   优于旧 `[16,8]`，无回退（设计文档 §3.8）。
-- t32 仍是区间而非点值：并行效率受共享带宽与任务粒度影响，用 `native_impl` t32
-  （2.45 ms）作上界夹。对照 PyTorch t32 0.2–2.0 TFLOPS（`PERFORMANCE_VS_PYTORCH.md`
-  附录 A.1），MLIR 管线要做到 M3 才勉强进入同一量级。
+- M3 实测把 custom_0 从 34.4 ms 压到 16.2 ms（2.18×），但**没到 800 GF**：
+  实测显示瓶颈不是线程数而是**并行宽度只有 5–20**（窗口 tile 循环的 trip count），
+  t16 与 t32 持平。最高 338 GF（custom_1 @t16），距 `native_impl` t32 的 1.7 TF
+  仍差 5×。下一步是「加宽」而不是「加核」（计划文档 §9.6）。
 
 ---
 
@@ -203,10 +209,13 @@ oc_outer   : 0..192 step 192         (1)      ← K2·Nf 覆盖整个 Oc
 
 ### 6.1 多核的实现路径（按风险从低到高）
 
-1. **`scf.for` → `scf.parallel`，再 lowering 到 OpenMP**
+1. **`scf.for` → `scf.parallel`，再 lowering 到 OpenMP**（**已采用并落地**）
    （`--convert-scf-to-openmp` / `SCFToOpenMP`，运行时已有 libomp——kblas 内部就在用）。
-   需要在 `SConv.cpp` 里用 `transform.structured.tile_to_parallel` 或直接改写外层循环。
-   **风险点**：pinned LLVM 版本里该 pass 是否可直接串进现有 pipeline、与 one-shot-bufferize 的先后顺序。
+   实现方式：transform 打 `sconv.parallel` 属性 → `lib/Parallelize.cpp` 折叠 + 私化
+   scratch → `sconv-opt -sconv-lower-parallel` 内置 lowering。
+   **实际踩到的风险点**：`memref.alloca_scope` 清理（新 pass）、
+   `memref.reinterpret_cast` 的 offset 相对 base buffer、per-thread scratch 不能每次 alloc。
+   详见 `OPTIMIZATION_PLAN_2026-11-18.md` §9.5。
 2. **在 transform 里直接生成 `omp.parallel`/`omp.wsloop`**（绕过 scf→omp）。
    更可控，但要写 MLIR dialect 代码。
 3. **兜底：运行时并行**（把整段 tile 循环做成运行时函数，内部用持久线程池，照抄 SME shim 的 `pool_run`）。
@@ -234,20 +243,22 @@ oc_outer   : 0..192 step 192         (1)      ← K2·Nf 覆盖整个 Oc
 | **M1** 打包向量化（已交付） | 运行时 `pack_input_tile()` + `transform.lower.to_pack` + 打包目标 buffer 上提复用 | custom_0 单线程 **≤125 ms（实测 115.7）**；IR 中不再有标量 input-packing generic；`test_fastpack.py --stage all` PASS |
 | **M2** 微内核放大（已交付，未达 75） | multipacking 快打包 + `mK_info=[64,32]` 的 tuned 变体（`sconv-blas-fastp-tuned.mlir`） | custom_0 单线程 **≈84–87 ms**（原定 ≤75 未达）；11/11 PASS（11 个 custom 形状） |
 | **A** 形状自适应 mK（已交付） | `mK_info=[0,0]` 哨兵 + 最大整除因子（`selectAutoNwin/Nf`），默认快路径启用 | 11/11 形状优于 `[16,8]` 且无回退；custom_0 **≈87 ms**；`test_mk_auto.py --stage ir`（auto IR == 显式 IR）与 `--stage perf` PASS |
-| **M3** 多核 | `scf.parallel` → omp（或兜底） | t32 ≥ 800 GFLOPS 且 ≥ 0.5× `native_impl` t32（3 个代表形状）；11/11 PASS |
+| **M3** 多核（已交付，未达 800 GF） | `sconv.parallel` → `scf.parallel` → OpenMP + per-thread scratch | 11/11 PASS（t8、t32）；geomean **2.36×**、最高 338 GF；**t32 ≥ 800 GF 未达成**，原因是并行宽度 5–20（计划文档 §9.4） |
 | 全程 | — | 任一形状相对当前回退 > 5% 即视为失败并回滚 |
 
 > 说明：原表把「≤75 ms」写在 M1，后移到 M2。当时的归因「index ≈33 ms」是**误判**
 > （实测 index/循环只有 ≈1 ms，大头是动态 stride 的边界拷贝，见设计文档 §3.9）。
-> A+C+G 之后单线程 41 ms，已越过原 55–65 ms 的投影区间。
+> A+C+G 之后单线程 33.3 ms（2.0 GHz），已越过原 55–65 ms 的投影区间。
 >
 > **`[64,32]` 只能按形状用**：`Nwin=64` 不整除输出空间时落入 edge 路径，
 > 实测 custom_5 229→6227 ms、custom_7 36→216 ms。**A+G 用「最大整除因子」自动选择
 > 解决**：默认快路径传 `mK_info=[0,0]`，窗口候选 `{160,128,80,64,32,16}`，
 > 规则形状选 160，`Ohw=400` 落到 80；11/11 形状均优于 `[16,8]`，无回退（设计文档 §3.10）。
 
-**停止条件**：M3 若 4 人日内无法让 t32 突破 400 GFLOPS，
-停止在「单线程向量化版」（已是 5×），并把它作为交付结论。
+**停止条件（复核）**：原停止条件是「M3 若 4 人日内无法让 t32 突破 400 GFLOPS，
+就停在单线程向量化版」。实测最高 338 GF（custom_1 @t16），**未突破 400**，
+因此按原条件应停在「单线程向量化版 + 多核可用版」，把加宽留给 M4；
+是否继续投入取决于是否真的需要 800 GF。
 
 ---
 
@@ -265,9 +276,9 @@ oc_outer   : 0..192 step 192         (1)      ← K2·Nf 覆盖整个 Oc
 
 ## 10. 建议
 
-1. **立刻做 M1 + M2**（2–3 人日）。这两步证据充分、风险低，且能把 MLIR 管线从
-   27 GFLOPS 拉到 ~137 GFLOPS——**这是目前唯一「数量级」级别的剩余空间**。
-2. **M3 单独立项**，先花半天验证 `scf.parallel → OpenMP` 在本仓库的 LLVM 版本上能跑通
-   一个玩具 kernel；能跑通再投入，跑不通就走兜底或停在 M2。
+1. **M1 + M2 + A + C + G 已完成**：单线程从 27 GF 拉到 127.7 GF（geomean 1.57× vs torch）。
+2. **M3 已完成并可用**（geomean 2.36×、11/11）：但 t16 以后不再变快，
+   说明继续加线程是浪费；下一笔投入应放在**加宽**（M4：归约环内移 / 窗口组入链 /
+   多核专用 `Nwin`），而不是更多核。
 3. 无论做到哪一步，**对外结论都以 `native_impl` 的 vs-PyTorch 数据为准**，
    MLIR 管线的数字只作为「变换本身的有效性」证据，两者不要混在同一张表里。

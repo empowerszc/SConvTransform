@@ -52,6 +52,7 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/AffineExpr.h"
@@ -1787,6 +1788,23 @@ applyTileTo(RewriterBase &rewriter, Operation *transformOp, Operation *target, C
   auto schedule = (res.schd == Scheduling::IS) ? "IS" : "WS";
   ukernel->setAttr("microkernel", rewriter.getUnitAttr());
   ukernel->setAttr("schedule", rewriter.getStringAttr(schedule));
+
+  // ==== Multicore markers =================================================
+  // Mark the innermost tiling loop, i.e. the window tile of the micro-kernel
+  // schedule.  It is the only loop of the nest whose iterations write disjoint
+  // output tiles and whose body is a single parallel work item:
+  //   * the input-channel loop is the reduction dimension of the micro-kernel,
+  //     so its iterations accumulate into the same output tile;
+  //   * the filter tile loop and the window-group loop above it also contain
+  //     the filter (multi)packing, which writes a scratch buffer shared by all
+  //     window iterations, so they cannot join the parallel chain (see
+  //     docs/OPTIMIZATION_PLAN_2026-11-18.md, section 9.4).
+  // The trip count of the marked loop is 5..20 on the measured shapes; the
+  // parallel width is therefore bounded by it.
+  if (loopOps.size() > 1) {
+    if (auto windowTile = dyn_cast<scf::ForOp>(loopOps[loopOps.size() - 2]))
+      windowTile->setAttr("sconv.parallel", rewriter.getUnitAttr());
+  }
 
   // Store the results (Operation*) in the output variable (as Value)
   outResults.push_back(ukernel);

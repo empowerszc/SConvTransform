@@ -4,8 +4,9 @@
 > 性能数字的**权威出处**是 `docs/PERFORMANCE_VS_PYTORCH.md`（含完整 18 用例 × 6 线程档），
 > 本文负责**把设计思路、代码位置、已生效/已否决的优化及其证据串成一条线**，不重复抄表。
 >
-> 最近更新：2026-11-18（MLIR 单线程：快速边界拷贝 A + 宽 tile `Nc` 自适应 C，
-> custom_0 87 → 40 ms/iter；更正旧文对「index ≈33 ms」的归因）
+> 最近更新：2026-11-18（MLIR：单线程 A+C+G 追到 **geomean 1.57× vs torch t1**；
+> M3 多核正式实现落地，单 NUMA **geomean 2.36×**。文中绝对 ms 均为 2.0 GHz 重测；
+> 1.55 GHz 时代的数据只用于看相对变化，已逐处标注）
 
 ---
 
@@ -13,10 +14,10 @@
 
 | 问题 | 答案 |
 |---|---|
-| 现在领先 PyTorch 吗？ | `native_impl`（参考实现）：是，18 用例 t1–t32 geomean **1.51×–1.62×**，每档 16–18/18 取胜。**MLIR/ConvBench 交付路径**：单线程 geomean 从 **0.66× 追到 ≈1.14×**（11 个 custom 形状，8/11 ≥1.0×），见 §3.9。 |
-| 提升来自哪里？ | `native_impl`：`Bc` 并行、`(Nwin,Nf)` 自适配、SME shim 去固定开销、`Nc` 精调。MLIR 路径：快速输入打包 M1、微内核 tile 放大 M2、形状自适应 mK、**快速边界 `memrefCopy` A**、**宽 tile 下的 `Nc` 自适应 C**。 |
-| 还有大空间吗？ | `native_impl` 已贴着自己的 roofline（打包 13 GB/s/core 是带宽上限，非代码上限）。MLIR 路径剩余空间：c5/c6/c7 三个「小空间/小通道」形状仍落后，主要是固定开销（边界拷贝、pack、harness fill）；GEMM 之外的串行项必须先降下去，多核才不会被它们压住。 |
-| 下一步建议 | 见 `docs/OPTIMIZATION_PLAN_2026-11-18.md`：先做 E（filter/输入打包小修）把串行项压到最低，再评估 B（消除边界拷贝）与 D（缓存分块），最后才是单 NUMA ≤38 线程的 M3。 |
+| 现在领先 PyTorch 吗？ | `native_impl`（参考实现）：是，18 用例 t1–t32 geomean **1.51×–1.62×**，每档 16–18/18 取胜。**MLIR/ConvBench 交付路径**：单线程 geomean 从 **0.66× 追到 1.57×**（11 个 custom 形状，10/11 ≥1.0×）；多核（M3，单 NUMA）再 **2.36×**，见 §3.9–§3.11。 |
+| 提升来自哪里？ | `native_impl`：`Bc` 并行、`(Nwin,Nf)` 自适配、SME shim 去固定开销、`Nc` 精调。MLIR 路径：快速输入打包 M1、微内核 tile 放大 M2、形状自适应 mK、**快速边界 `memrefCopy` A**、**宽 tile 下的 `Nc` 自适应 C**、**窗口 tile 160/80 G**、**M3 多核（`sconv.parallel` → OpenMP + per-thread scratch）**。 |
+| 还有大空间吗？ | `native_impl` 已贴着自己的 roofline（打包 13 GB/s/core 是带宽上限，非代码上限）。MLIR 单线程只剩 custom_7 一个落后形状（0.83×，结构性：`Ohw=400` 逼 `Nwin=80`）；最大的空间在多核——但**不是加核，而是加宽**：并行宽度只有 5–20，t16 以后就分不动了（§3.11）。 |
+| 下一步建议 | M4：把并行宽度从 5–20 提到 40–160（归约环内移 / 窗口组入链 / 多核专用 `Nwin`），目标 t16 ≥3.5×；单线程侧剩 E（打包去冗余）与 D（c7 余数 peeling）。见 `docs/OPTIMIZATION_PLAN_2026-11-18.md` §9.6。 |
 
 ---
 
@@ -256,7 +257,7 @@ custom_0 实测（单线程，node0，ms/iter）：
 > **边界 copy ≈24 ms + GEMM ≈43 ms + 输入打包 ≈7.7 + filter 打包 ≈3.7 +
 > fill ≈0.3 + 循环/index ≈1**（合计 ≈80）。`memrefCopy` 在动态 stride 下退化成
 > 逐元素循环（≈0.45 GB/s），被误读成了「index 计算」。修正后两项优化（§3.9）
-> 把 custom_0 从 87 ms 拉到 40 ms，§3.10 再稳在 41 ms。
+> 把 custom_0 从 87 ms 拉到 40 ms，§3.10 再稳在 41 ms（1.55 GHz 口径；2.0 GHz 下为 33.3 ms）。
 
 > **结论（修正版）**：`≤75 ms` 当时没达到，原因不是 mK 调参，而是
 > (a) 函数边界 tensor→memref 的逐元素拷贝，(b) `[64,32]` 下 L1 规则把 `Nc` 压到 6
@@ -336,6 +337,8 @@ M2 的结论是「宽 tile 很快，但写死会翻车」。本节把它变成�
 
 ### 3.9 MLIR 管线：快速边界拷贝 A + 宽 tile 下的 `Nc` 自适应 C（2026-11-18）
 
+> 本节的绝对 ms 是 **1.55 GHz** 时代测的，只能看相对变化；2.0 GHz 下的对应值见 §3.10 末。
+
 §3.7 把 87 ms 里的 ~33 ms 归因为「每微内核迭代的 index 计算」。这个归因是**错的**。
 用「复制边界 copy 取斜率」和「只删输出端」的差分重测，真实构成是：
 
@@ -372,6 +375,8 @@ M2 的结论是「宽 tile 很快，但写死会翻车」。本节把它变成�
 
 ### 3.10 窗口 tile 放大到 160（`selectAutoNwin`，2026-11-18）
 
+> 下面扫描表的绝对 ms 是 1.55 GHz 口径（同一批测量内部可比）；2.0 GHz 终值见本节末。
+
 `Nc` 修好后，11 个形状的瓶颈变成「输入打包次数 + 每次 GEMM 太小」。两者都由
 `Nwin` 决定：打包次数 = `N/ICtile/Ohw·Nwin`，每次 GEMM 的 `m = Nwin`。
 
@@ -404,14 +409,44 @@ M2 的结论是「宽 tile 很快，但写死会翻车」。本节把它变成�
 `fn ≤ 256` 时 B tile 小，32 在 c6/c9/c10 上都快 5–12%；`fn > 256` 时 B 已经很大，
 16 更稳（c8：193 vs 208 ms）。唯一回退是 custom_2（42.3 → 43.2，≈2%）。
 
-**结果**：11 形状 geomean 从 0.66× 追到 **1.35×**，10/11 ≥1.0×；custom_0 41 ms、
-custom_1 776 ms、custom_6 496 ms。完整表见 `OPTIMIZATION_PLAN_2026-11-18.md` §8.2。
+**结果（2.0 GHz 重测）**：11 形状 geomean **1.57×**，10/11 ≥1.0×；
+custom_0 **33.3 ms**、custom_1 660.9 ms、custom_6 412.2 ms。完整表见
+`OPTIMIZATION_PLAN_2026-11-18.md` §8.2。1.55 GHz 时代同一张表写的是 1.35×，
+差异来自同频重测（旧表的 torch 列是更早的 2.0 GHz 数据），改动本身没有变化。
 
-**验收**：
+**验收（2.0 GHz）**：
 - `test_mk_auto.py`：auto 与显式 `[160,32]/[80,32]/[160,16]/[80,32]` 的 IR 完全相同；
-  custom_0 实测 38.5 ms（预算 55）。
-- `test_fastpack.py --stage all`：IR/正确性/性能三门禁 PASS，custom_0 39.4 ms。
+  custom_0 实测 37.0 ms（预算 55）——PASS。
+- `test_fastpack.py --stage all`：IR/正确性/性能三门禁 PASS，custom_0 31.3 ms。
 - 11/11 正确性 PASS。
+
+### 3.11 MLIR 管线：M3 多核（`sconv.parallel` → OpenMP，2026-11-18）
+
+**设计理念：并行维度是 schedule 的属性，应该由编译器表达，而不是藏进运行时线程池。**
+
+- `lib/SConv.cpp` 只在**最内层窗口 tile 循环**上打 `sconv.parallel`；
+- `lib/LowerToPack.cpp` 给输入打包的 scratch `memref.alloc` 打 `sconv.parallel_scratch`；
+- `lib/Parallelize.cpp` 的 `sconv-parallelize` 把「直接嵌套的已标记循环链」折成
+  `scf.parallel`，并把 scratch 扩成 `[64][...]`、用 `omp_get_thread_num()` 取 per-thread 槽；
+- `sconv-opt -sconv-parallelize -sconv-lower-parallel` 内置完整 lowering
+  （`convert-scf-to-openmp` + `sconv-erase-alloca-scope` + 原有串行 pipeline），
+  一条命令产出可执行的 LLVM IR。
+
+**正确性根因（原型为什么错）**：原型把 `Nc`（输入通道块）也标成并行，但它是 GEMM 的
+**归约维**——同一个输出 tile 被 6 个 `Nc` 迭代累加，并行后是 8/11 形状错、max_diff 1e6–1e8。
+正式实现只并行「写不相交 C 列、body 是完整工作项」的窗口 tile 循环；filter tile 循环与
+窗口组循环因体内含 filter 打包（写共享 scratch）而不入链。
+
+**实测（2.0 GHz，node0，ms/iter）**：geomean **2.36×**，custom_1/custom_4 3.09×/3.08×，
+最高 338 GF（custom_1 @t16）。串行总时间 2.42 s → t16 0.91 s。t1 比串行慢 0–10%。
+
+**限制**：并行宽度 = 窗口 tile 循环的 trip count，只有 **5–20**（c3/c7 5，c5 20，其余 10），
+t16 与 t32 持平，**加线程已经没有收益**；800 GF 验收线未达成。这与单线程最优的
+`Nwin=160` 直接冲突——单线程要「大 tile 少调用」，多核要「小 tile 多任务」。
+
+**下一步（M4）**：归约环内移（引入 batch 维，宽度 ×4）、filter 打包提出 filter-tile 循环
+（窗口组入链，宽度 ×4–16）、或按线程数下调 `Nwin`（×2–4）。完整分析、优缺点与验收见
+`OPTIMIZATION_PLAN_2026-11-18.md` §9。
 
 ---
 
@@ -433,12 +468,13 @@ custom_1 776 ms、custom_6 496 ms。完整表见 `OPTIMIZATION_PLAN_2026-11-18.m
 ## 5. 当前性能与结构的关系（怎么读那些数字）
 
 1. **t1 的 GFLOPS 主要由 GEMM 效率决定**（打包占比 9%–49%，随通道数增大而升高）。
-   MLIR 路径经 A/C/G 后，custom_0/9/10 已到单核峰值（≈128 GF）的 80–84%；
-   剩下的是小形状（c7：1.06 GFLOP）的固定开销与 GEMM 粒度。
-2. **t32 的 GFLOPS 受两个上限夹击**：`N·窗tile` 的任务数（并行度）× 打包带宽（单核 13 GB/s，多核共享）。
-   这解释了 `r18_7`/`r50_ds28` 为什么在 t32 也只有 100–400 GFLOPS 量级。
-3. **不是所有用例都该线性扩展**：`custom_1/custom_3` 这类大通道用例 t1 就有 2.5×+ 优势，
-   随线程增大会逐渐收敛到 torch 的水平（torch 的多线程扩展更好），这是 t32 加速比回落的来源。
+   MLIR 路径经 A/C/G 后，custom_0/custom_9 已到单核 SVE 峰值（≈128 GF）的 99–100%，
+   custom_10 87%。**超过 SVE 口径的部分只能来自 KBLAS 内部对矩阵引擎（SME）的使用**，
+   所以单线程在 SVE 意义上已无余量；剩下的是小形状（c7：1.06 GFLOP）的固定开销与 GEMM 粒度。
+2. **多核的 GFLOPS 受「并行宽度」而不是核数限制**：M3 的宽度 = 窗口 tile 循环 trip count，
+   只有 5–20，所以 t16 与 t32 持平（§3.11）。加核之前必须先加宽。
+3. **不是所有用例都该线性扩展**：`custom_1/custom_3` 这类大通道用例 t1 就有 2.0–2.2× 优势，
+   多核时受打包带宽与宽度约束，实测 3.1×/1.7×，不会到 16×。
 4. 加速比矩阵（after/torch）与自身提升矩阵（after/before）分别在
    `docs/PERFORMANCE_VS_PYTORCH.md` §3.2 / §3.3，**不要混用**：
    前者是 `native_impl` 18 用例，后者的 MLIR 11 形状表在
@@ -476,7 +512,8 @@ t36 稳定 1650–1760，IQR ±3–5%）。已排除 pool 原语、绑核、DVFS
 | 想改什么 | 文件 | 关键位置 / 开关 |
 |---|---|---|
 | 算法级 tiling / packing / 微内核替换 | `lib/SConv.cpp`、`lib/LowerToBLAS.cpp` | `applyTileTo()`、`scf::tileUsingSCF`、`LowerToBLASOp::apply()` |
-| 快速输入打包（M1/M2） | `lib/LowerToPack.cpp`、`scripts/convbench/runtime/pack_input_tile.c`、`test/lowering/sconv-blas-fastp*.mlir` | `LowerToPackOp::apply`、`applyInputPacking`/`inputMultipackingOpt`（buffer 上提）、`pack_input_tile()` |
+| 快速输入打包（M1/M2） | `lib/LowerToPack.cpp`、`scripts/convbench/runtime/pack_input_tile.c`、`test/lowering/sconv-blas-fastp*.mlir` | `LowerToPackOp::apply`、`applyInputPacking`/`inputMultipackingOpt`（buffer 上提）、`pack_input_tile()`、`sconv.parallel_scratch` 标记 |
+| 多核（M3） | `lib/SConv.cpp`（打 `sconv.parallel`）、`lib/Parallelize.cpp`、`include/SConvPasses.h`、`sconv-opt/sconv-opt.cpp` | `applyTileTo` 末尾的 marker、`sconv-parallelize`、`sconv-erase-alloca-scope`、`-sconv-lower-parallel`、`-sconv-max-threads` |
 | 打包验收门槛 | `scripts/convbench/test_fastpack.py` | `--stage ir\|correct\|perf`；`PERF_BUDGET_MS` |
 | SME 路由决策 | `lib/LowerToSME.cpp` | `SMESelectOp::apply`、`min_ic`/`max_oc` 门槛 |
 | 参考实现的并行/调优 | `native_impl/src/sconv.cpp` | `build_Bc`、`run_pass`、自适应块、`SCONV_*` 环境变量 |
@@ -505,6 +542,12 @@ numactl --cpunodebind=0 --membind=0 ./build/sconv_bench --filter common \
 export SCONV_ROOT=$PWD
 python3 scripts/convbench/run_convbench.py --csv scripts/convbench/samples/custom_conv.csv \
   --num 1 --runs 3 --warmup 2
+
+# MLIR 多核（M3）：一条命令产出 OpenMP 版 LLVM IR，线程数用 OMP_NUM_THREADS 控制
+build/bin/sconv-opt -transform=test/lowering/sconv-blas-fastp.mlir \
+  -sconv-parallelize -sconv-lower-parallel conv.mlir -o conv.llvm.mlir
+OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 mlir-cpu-runner conv.llvm.mlir \
+  -e main -entry-point-result=void -shared-libs=...,libomp.so
 
 # vs PyTorch 全量
 python3 scripts/bench_vs_torch/compare_vs_pytorch.py --threads 1,2,4,8,16,32

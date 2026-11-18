@@ -9,6 +9,7 @@ add_mlir_library(
   LowerToBLAS.cpp
   LowerToPack.cpp
   LowerToSME.cpp
+  Parallelize.cpp
 
   # Make includes visible without top-level path.
   ADDITIONAL_HEADER_DIRS
@@ -26,4 +27,6 @@ add_mlir_library(
   MLIRLinalgDialect
   MLIRMemRefDialect
   MLIRArithDialect
+  MLIRPass
+  MLIRDialectUtils
 )

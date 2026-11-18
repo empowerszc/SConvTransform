@@ -645,40 +645,76 @@ SME 端到端数字来自 `sme/test/shim_bench.c`（`sme/e2e.out bench <threads>
 
 ---
 
-## 附录 C：MLIR/ConvBench 交付路径（单线程，2026-11-18）
+## 附录 C：MLIR/ConvBench 交付路径（单线程 + 多核，2026-11-18，2.0 GHz 重测）
 
 本文正文的表格是 **`native_impl`**（参考实现/上界探针）的数字。交付物是 MLIR 路径，
 它的口径不同（`mlir-cpu-runner` + ConvBench payload，含 `linalg.fill` 与函数边界拷贝），
 因此单独列出，**不要与正文表格混用**。
 
-单线程、`numactl --cpunodebind=0 --membind=0`、runs=5/warmup=3；
+**频率口径**：白天这台机器实际运行在 1.55 GHz，20:30 起固定回 2.0 GHz。
+附录 C 的旧版把「1.55 GHz 下的 MLIR」和「更早 2.0 GHz 下的 torch」放在同一张表里，
+不同频导致比值被低估约 1.2×。**下面整张表都是 2.0 GHz 同频重测**。
+
+口径：`numactl --cpunodebind=0 --membind=0`，runs=5/warmup=3，best-of-2；
 改动为 A（快速 `memrefCopy`）+ C（`Nc` 自适应）+ G（窗口 tile 160/80）。
+
+### C.1 单线程 vs PyTorch t1
 
 | 形状 | GFLOP | MLIR ms | MLIR GF | torch GF | 比值 |
 |---|--:|--:|--:|--:|--:|
-| custom_0 | 4.25 | 41 | 103.6 | 86.2 | 1.20× |
-| custom_1 | 67.95 | 776 | 87.6 | 45.7 | 1.92× |
-| custom_2 | 4.25 | 44 | 96.5 | 72.3 | 1.33× |
-| custom_3 | 16.99 | 265 | 64.1 | 39.0 | 1.64× |
-| custom_4 | 67.95 | 776 | 87.6 | 67.4 | 1.30× |
-| custom_5 | 4.25 | 56 | 75.8 | 62.9 | 1.21× |
-| custom_6 | 33.97 | 496 | 68.5 | 57.2 | 1.20× |
-| custom_7 | 1.06 | 17 | 62.5 | 91.2 | 0.68× |
-| custom_8 | 16.99 | 201 | 84.5 | 62.7 | 1.35× |
-| custom_9 | 16.99 | 158 | 107.5 | 68.4 | 1.57× |
-| custom_10 | 8.49 | 88 | 96.5 | 49.6 | 1.93× |
+| custom_0 | 4.25 | 33.3 | 127.7 | 87.7 | **1.46×** |
+| custom_1 | 67.95 | 660.9 | 102.8 | 46.5 | **2.21×** |
+| custom_2 | 4.25 | 37.5 | 113.2 | 75.9 | **1.49×** |
+| custom_3 | 16.99 | 218.8 | 77.6 | 38.5 | **2.02×** |
+| custom_4 | 67.95 | 653.0 | 104.1 | 73.3 | **1.42×** |
+| custom_5 | 4.25 | 47.4 | 89.5 | 62.3 | **1.44×** |
+| custom_6 | 33.97 | 412.2 | 82.4 | 58.0 | **1.42×** |
+| custom_7 | 1.06 | 15.1 | 70.5 | 84.4 | 0.83× |
+| custom_8 | 16.99 | 168.4 | 100.9 | 65.9 | **1.53×** |
+| custom_9 | 16.99 | 134.0 | 126.8 | 72.9 | **1.74×** |
+| custom_10 | 8.49 | 76.0 | 111.8 | 50.0 | **2.24×** |
 
-**geomean 1.35×，10/11 ≥1.0×**（改动前 0.66×、0/11）。torch 列取自本文 §3.2 的同机 t1 数据。
-唯一落后的 custom_7 是 1.06 GFLOP 的极小形状，`Ohw=400` 使窗口 tile 只能取 80，
-720 次 `m80/n32/k288` 小 GEMM 对 91 GF 的单次大 GEMM；原因与改进路径见
+**geomean 1.57×，10/11 ≥1.0×**（改动前 0.66×、0/11）。唯一落后的 custom_7 是
+1.06 GFLOP 的极小形状，`Ohw=400` 使窗口 tile 只能取 80，720 次 `m80/n32/k288`
+小 GEMM 对 91 GF 的单次大 GEMM；原因与改进路径见
 `docs/OPTIMIZATION_PLAN_2026-11-18.md` §8.3。
 
-复现：
+### C.2 多核（M3 正式实现，单 NUMA，OpenMP）
+
+`-sconv-parallelize -sconv-lower-parallel` 产出的 OpenMP 版本，
+`OMP_NUM_THREADS` 控制线程数，全部在 node0 内，报数止于 t32。
+
+| 形状 | 串行 | t1 | t8 | t16 | t32 | 最佳加速比 | 最佳 GF |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| custom_0 | 34.4 | 34.6 | 18.2 | **16.2** | 15.8 | 2.18× | 269 |
+| custom_1 | 620.9 | 665.3 | 259.4 | **200.8** | 201.3 | 3.09× | 338 |
+| custom_2 | 37.1 | 41.0 | 22.5 | 19.2 | **18.4** | 2.02× | 231 |
+| custom_3 | 232.5 | 226.3 | **138.5** | 139.5 | 138.6 | 1.68× | 123 |
+| custom_4 | 649.6 | 676.4 | 272.2 | **210.7** | 214.2 | 3.08× | 323 |
+| custom_5 | 46.6 | 46.7 | 21.1 | 18.6 | **17.0** | 2.74× | 250 |
+| custom_6 | 407.1 | 422.8 | 180.6 | 148.3 | **147.5** | 2.76× | 230 |
+| custom_7 | 14.4 | 15.9 | 11.0 | **10.8** | 13.8 | 1.33× | 98 |
+| custom_8 | 168.0 | 172.9 | 72.4 | **57.6** | 61.7 | 2.92× | 295 |
+| custom_9 | 130.9 | 141.1 | 66.7 | 56.4 | **51.2** | 2.56× | 332 |
+| custom_10 | 75.0 | 80.3 | 37.9 | **31.3** | 33.1 | 2.40× | 271 |
+
+**geomean 2.36×**；t16 与 t32 持平，并行宽度只有 5–20，t≥16 已无收益。
+正确性 11/11（t8、t32 各验一遍）。设计、根因与 M4 计划见
+`docs/OPTIMIZATION_PLAN_2026-11-18.md` §9。
+
+### C.3 复现
 
 ```bash
 source env.sh
+# 单线程
 python3 scripts/convbench/run_convbench.py --csv scripts/convbench/samples/custom_conv.csv \
   --transform test/lowering/sconv-blas-fastp.mlir --num 11 --runs 5 --warmup 3
+# 多核
+build/bin/sconv-opt -transform=test/lowering/sconv-blas-fastp.mlir \
+  -sconv-parallelize -sconv-lower-parallel conv.mlir -o conv.llvm.mlir
+OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 mlir-cpu-runner conv.llvm.mlir \
+  -e main -entry-point-result=void -shared-libs=...,libomp.so
+# 门禁
 python3 scripts/convbench/test_fastpack.py --stage all
 python3 scripts/convbench/test_mk_auto.py
 ```

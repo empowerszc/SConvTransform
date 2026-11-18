@@ -41,6 +41,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/IRMapping.h>
 #include <mlir/Interfaces/SideEffectInterfaces.h>
+#include <mlir/Interfaces/ViewLikeInterface.h>
 
 using namespace mlir;
 using namespace mlir::affine;
@@ -193,6 +194,22 @@ static FailureOr<Operation *> lowerPackingToCall(TransformRewriter &rewriter,
   auto dstTy = dyn_cast<MemRefType>(dst.getType());
   if (!dstTy || !dstTy.hasStaticShape())
     return packingOp.emitError() << "expected a static destination tile";
+
+  // Tag the destination allocation so that the multicore pass
+  // (`sconv-parallelize`) can give it one slot per thread.  The destination is
+  // loop-invariant scratch that every innermost iteration fully overwrites, so
+  // it must not be shared by two concurrent iterations.
+  {
+    Value scratch = dst;
+    while (Operation *definingOp = scratch.getDefiningOp()) {
+      auto viewLike = dyn_cast<ViewLikeOpInterface>(definingOp);
+      if (!viewLike)
+        break;
+      scratch = viewLike.getViewSource();
+    }
+    if (auto alloc = scratch.getDefiningOp<memref::AllocOp>())
+      alloc->setAttr("sconv.parallel_scratch", rewriter.getUnitAttr());
+  }
   ArrayRef<int64_t> dstShape = dstTy.getShape();
   int64_t Ni = 1, Nc, Fh, Fw, Nwin;
   if (isMulti) {
