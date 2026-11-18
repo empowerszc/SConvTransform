@@ -2268,17 +2268,29 @@ treatEdgeTileConvolution(RewriterBase &rewriter, Operation *transformOp, Operati
 /// @brief Choose the microkernel window tile for a shape when `mK_info`
 /// requests it automatically (a zero `Nwin`).
 ///
-/// The `[64, 32]` tile is the fastest configuration measured on this machine,
-/// but it is only fast when the tiling is *exact*: a `Nwin` that does not
-/// divide `Oh*Ow` sends the pipeline down the edge path, which costs far more
-/// than the wider tile saves (custom_7, `Ohw=400` with `Nwin=64`: 36 -> 216 ms).
-/// Taking the largest divisor of the spatial size keeps the wide tile on
-/// regular shapes and degrades gracefully instead of falling off a cliff.
-/// `16` is the historical default and the finest granularity the edge handler
-/// is written around; if even 16 does not divide, the existing edge path takes
-/// over as before.
+/// The 2026-11-18 sweep over the 11 custom shapes showed that the window tile
+/// is the dominant structural knob once packing is vectorized: enlarging it
+/// amortizes the input packing and the per-call fixed cost of the GEMM, while
+/// the packed A tile (k x Nwin) and the C tile still fit in L2 at 160.
+/// Measured (single thread, ms/iter, best Nc):
+///
+///   shape      Nwin=16/64   Nwin=80   Nwin=160
+///   custom_1      882         803       764
+///   custom_4      961         757       760
+///   custom_6      650         630       501
+///   custom_5       76          65        54
+///   custom_2       51          46        43
+///   custom_9      184         167       156
+///   custom_7       20          16        -- (400 % 160 != 0)
+///
+/// Non-dividing values are unusable: the tiling would fall into the edge path,
+/// which is ~50x slower (custom_7, `Ohw=400` with `Nwin=64`: 36 -> 216 ms).
+/// So take the widest candidate that divides the spatial size exactly,
+/// descending: 160, 128, 80, 64, 32, 16. `16` is the historical default and
+/// the finest granularity the edge handler is written around; if even 16 does
+/// not divide, the existing edge path takes over as before.
 static int64_t selectAutoNwin(int64_t ohw) {
-  for (int64_t candidate : {64, 32, 16})
+  for (int64_t candidate : {160, 128, 80, 64, 32, 16})
     if (ohw >= candidate && ohw % candidate == 0)
       return candidate;
   return 16;
@@ -2336,7 +2348,7 @@ transform::SConvOp::apply(transform::TransformRewriter &rewriter,
 
   // Initialize the default values of mKInfo & ArchInfo to the CSA Analysis.
   // It's dependent of the target machine. We used these values for Sorgan
-  mKInfo mK = {16, 8, 128};
+  mKInfo mK = {16, 8, 128, 0};
   ArchInfo arch = {
       (uint32_t)(32768 * 0.9),
       (uint32_t)(1048576 * 0.9),
@@ -2369,6 +2381,10 @@ transform::SConvOp::apply(transform::TransformRewriter &rewriter,
       mK.nwindows = mKValues[0];
       mK.num_filters = mKValues[1];
       mK.noutput = mK.nwindows * mK.num_filters;
+      // Optional third value: input-channel tile. 0 (or absent) means "auto",
+      // resolved per shape in CSA (see computeTileC).
+      if (mKValues.size() >= 3)
+        mK.nc = mKValues[2];
     } else {
       return emitSilenceableError() << "Error: mKInfoAttr does not contain enough values!\n";
     }

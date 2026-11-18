@@ -33,6 +33,7 @@ typedef struct {
   uint8_t nwindows;    // 16 for MMA
   uint8_t num_filters; // 8 for MMA
   uint16_t noutput;    // 128 for MMA
+  uint8_t nc;          // 0 = choose automatically; otherwise input-channel tile
 } mKInfo;
 
 typedef struct {

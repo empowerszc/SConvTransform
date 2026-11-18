@@ -39,9 +39,10 @@ FAST_TF = os.environ.get(
     "SCONV_FASTP_TF",
     os.path.join(R.SCONV_ROOT, "test/lowering/sconv-blas-fastp.mlir"))
 CSV = os.path.join(R.SCONV_ROOT, "scripts/convbench/samples/custom_conv.csv")
-# Autotuned default (~87 ms/iter median on custom_0). 105 leaves room for the
-# ±4-7% machine noise while still failing if the tuner falls back to [16,8].
-PERF_BUDGET_MS = 105.0
+# Fast boundary copy + Nc heuristic put the median at ~40 ms/iter on custom_0
+# (was ~85 with stock copies and the L1-derived Nc). 55 still catches losing
+# either optimization while leaving room for ±4-7% machine noise.
+PERF_BUDGET_MS = 55.0
 # Long-standing target. Not reachable by tile selection: even [64,32] lands at
 # ~87 ms because the residual is per-iteration index math (~33 ms) plus a
 # memory-bound GEMM (~46 ms). See design doc §3.7/§3.8.

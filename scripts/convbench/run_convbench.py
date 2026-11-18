@@ -92,6 +92,16 @@ def build_runtime_libs():
         r = subprocess.run(["clang", "-shared", "-fPIC", "-O2", "-o", pack_lib, pack_src],
                            capture_output=True, text=True)
         if r.returncode: print(f"  WARN: pack_input_tile build failed: {r.stderr[:200]}")
+    # fast_memref_copy: row-segmented memrefCopy. Loaded before the MLIR runner
+    # utils so its definition of `memrefCopy` wins (see get_libs).
+    fastcopy_lib = os.path.join(BUILD_DIR, f"libfast_memref_copy.{LIB_EXT}")
+    fastcopy_src = os.path.join(RUNTIME_DIR, "fast_memref_copy.c")
+    if (not os.path.exists(fastcopy_lib)
+            or os.path.getmtime(fastcopy_lib) < os.path.getmtime(fastcopy_src)):
+        r = subprocess.run(["clang", "-shared", "-fPIC", "-O3",
+                            "-o", fastcopy_lib, fastcopy_src],
+                           capture_output=True, text=True)
+        if r.returncode: print(f"  WARN: fast_memref_copy build failed: {r.stderr[:200]}")
     # sconv_sme_direct: ArmSME direct-conv kernel (MLIR) + C shim (pad/pack/threads).
     sme_lib = os.path.join(BUILD_DIR, f"libsconv_sme_direct.{LIB_EXT}")
     sme_dir = os.path.join(SCONV_ROOT, "sme")
@@ -112,10 +122,15 @@ def build_runtime_libs():
                    "-o", sme_lib, sme_shim, sme_obj, builtins, "-lpthread"]
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode: print(f"  WARN: sme shim build failed: {r.stderr[:300]}")
-    return rtclock_lib, blas_lib, sme_lib, pack_lib
+    return rtclock_lib, blas_lib, sme_lib, pack_lib, fastcopy_lib
 
-def get_libs(rtclock_lib, blas_lib, sme_lib, pack_lib=None):
-    libs = [
+def get_libs(rtclock_lib, blas_lib, sme_lib, pack_lib=None, fastcopy_lib=None):
+    libs = []
+    # Must be loaded first so its `memrefCopy` wins symbol resolution over the
+    # stock one in libmlir_runner_utils.
+    if fastcopy_lib:
+        libs.append(fastcopy_lib)
+    libs += [
         f"{LLVM_DIR}/lib/libmlir_c_runner_utils.{LIB_EXT}",
         f"{LLVM_DIR}/lib/libmlir_runner_utils.{LIB_EXT}",
         rtclock_lib, blas_lib, sme_lib,
@@ -266,12 +281,13 @@ if __name__ == "__main__":
     tf = os.path.abspath(args.transform)
 
     print("Building runtime libraries...")
-    rtclock_lib, blas_lib, sme_lib, pack_lib = build_runtime_libs()
-    libs = get_libs(rtclock_lib, blas_lib, sme_lib, pack_lib)
+    rtclock_lib, blas_lib, sme_lib, pack_lib, fastcopy_lib = build_runtime_libs()
+    libs = get_libs(rtclock_lib, blas_lib, sme_lib, pack_lib, fastcopy_lib)
     print(f"  rtclock: {rtclock_lib}")
     print(f"  blas:   {blas_lib}")
     print(f"  sme:    {sme_lib}")
     print(f"  pack:   {pack_lib}")
+    print(f"  copy:   {fastcopy_lib}")
     print(f"  transform: {tf}")
 
     # Generate payloads

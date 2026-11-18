@@ -642,3 +642,43 @@ python3 scripts/bench_vs_torch/compare_vs_pytorch.py --threads 1,2,4,8,16,32
 - `README.md`：用法与口径。
 SME 端到端数字来自 `sme/test/shim_bench.c`（`sme/e2e.out bench <threads>`）。
 
+
+---
+
+## 附录 C：MLIR/ConvBench 交付路径（单线程，2026-11-18）
+
+本文正文的表格是 **`native_impl`**（参考实现/上界探针）的数字。交付物是 MLIR 路径，
+它的口径不同（`mlir-cpu-runner` + ConvBench payload，含 `linalg.fill` 与函数边界拷贝），
+因此单独列出，**不要与正文表格混用**。
+
+单线程、`numactl --cpunodebind=0 --membind=0`、runs=5/warmup=3；
+改动为 A（快速 `memrefCopy`）+ C（`Nc` 自适应）+ G（窗口 tile 160/80）。
+
+| 形状 | GFLOP | MLIR ms | MLIR GF | torch GF | 比值 |
+|---|--:|--:|--:|--:|--:|
+| custom_0 | 4.25 | 41 | 103.6 | 86.2 | 1.20× |
+| custom_1 | 67.95 | 776 | 87.6 | 45.7 | 1.92× |
+| custom_2 | 4.25 | 44 | 96.5 | 72.3 | 1.33× |
+| custom_3 | 16.99 | 265 | 64.1 | 39.0 | 1.64× |
+| custom_4 | 67.95 | 776 | 87.6 | 67.4 | 1.30× |
+| custom_5 | 4.25 | 56 | 75.8 | 62.9 | 1.21× |
+| custom_6 | 33.97 | 496 | 68.5 | 57.2 | 1.20× |
+| custom_7 | 1.06 | 17 | 62.5 | 91.2 | 0.68× |
+| custom_8 | 16.99 | 201 | 84.5 | 62.7 | 1.35× |
+| custom_9 | 16.99 | 158 | 107.5 | 68.4 | 1.57× |
+| custom_10 | 8.49 | 88 | 96.5 | 49.6 | 1.93× |
+
+**geomean 1.35×，10/11 ≥1.0×**（改动前 0.66×、0/11）。torch 列取自本文 §3.2 的同机 t1 数据。
+唯一落后的 custom_7 是 1.06 GFLOP 的极小形状，`Ohw=400` 使窗口 tile 只能取 80，
+720 次 `m80/n32/k288` 小 GEMM 对 91 GF 的单次大 GEMM；原因与改进路径见
+`docs/OPTIMIZATION_PLAN_2026-11-18.md` §8.3。
+
+复现：
+
+```bash
+source env.sh
+python3 scripts/convbench/run_convbench.py --csv scripts/convbench/samples/custom_conv.csv \
+  --transform test/lowering/sconv-blas-fastp.mlir --num 11 --runs 5 --warmup 3
+python3 scripts/convbench/test_fastpack.py --stage all
+python3 scripts/convbench/test_mk_auto.py
+```

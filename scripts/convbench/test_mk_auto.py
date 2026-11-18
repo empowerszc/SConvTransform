@@ -36,15 +36,16 @@ SENTINEL = "      { mK_info = [0, 0] }\n"
 # Expected choice per case, derived from the shape table and stated
 # independently of the implementation (do not import the heuristic here).
 EXPECTED = {
-    "custom_0": (64, 32),   # Ohw=1600, fn=192
-    "custom_3": (16, 32),   # Ohw=400,  fn=768  (400 % 32 != 0)
-    "custom_5": (64, 16),   # Ohw=25600, fn=48  (48 % 32 != 0)
-    "custom_7": (16, 32),   # Ohw=400,  fn=192
+    "custom_0": (160, 32),  # Ohw=1600, fn=192
+    "custom_3": (80, 32),   # Ohw=400,  fn=768  (400 % 160 != 0)
+    "custom_5": (160, 16),  # Ohw=25600, fn=48  (48 % 32 != 0)
+    "custom_7": (80, 32),   # Ohw=400,  fn=192  (400 % 160 != 0)
 }
 PERF_CASE = "custom_0"
-# Auto should land on [64,32] and ~86 ms/iter; 105 leaves room for machine noise
-# while still failing loudly if the heuristic silently falls back to [16,8].
-PERF_BUDGET_MS = 105.0
+# Auto should land on [64,32] with the wide-tile Nc and ~40 ms/iter; 55 leaves
+# room for machine noise while still failing loudly if the heuristic silently
+# falls back to [16,8] (~86 ms) or to the L1-derived Nc (~63 ms).
+PERF_BUDGET_MS = 55.0
 
 
 def fail(msg):

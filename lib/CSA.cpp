@@ -68,6 +68,36 @@ public:
   }
 
   void computeTileC() {
+    // Wide microkernel tiles (e.g. [64,32]) make the L1-based channel tile far
+    // too small: on IC=192 it yields Nc=6, i.e. K=Nc*Fh*Fw=54, which shortens
+    // every GEMM call and leaves the compute pipeline under-filled. Measured on
+    // the 11 custom shapes, the optimum sits at Nc=16..32 (K=144..288) where the
+    // packed A/B tiles still fit comfortably in L2 (768 KB). Prefer an explicit
+    // override, then the wide-tile heuristic, then the historical L1 rule.
+    if (mK_.nc > 0) {
+      tile_c = mK_.nc < conv_.input_channels ? mK_.nc : conv_.input_channels;
+      if (tile_c == 0)
+        tile_c = 1;
+      return;
+    }
+    bool wideTile = (uint64_t)mK_.nwindows * mK_.num_filters >= 512;
+    if (wideTile) {
+      // target 32 when the filter count is small enough that the packed B tiles
+      // plus the k x Nwin packed A still fit in L2; 16 otherwise.
+      // Measured at Nwin=160 (ms/iter, best per shape):
+      //   fn<=256: custom_6 32:488 vs 16:519, custom_9 32:151 vs 16:158,
+      //            custom_10 32:84 vs 16:95, custom_5 24:55 (48 % 32 != 0)
+      //   fn>256 : custom_8 16:193 vs 32:208, custom_1/3/4 16 best
+      // The one measured regression is custom_2 (16:42.3 vs 32:43.2, ~2%).
+      uint32_t target = conv_.num_filters <= 256 ? 32 : 16;
+      uint32_t upper = target < conv_.input_channels ? target : conv_.input_channels;
+      for (uint32_t d = upper; d >= 8; --d) {
+        if (conv_.input_channels % d == 0) {
+          tile_c = d;
+          return;
+        }
+      }
+    }
     tile_c = (this->*heuristic)(conv_.input_channels, &Strategies::tileSizeL1,
                                 arch_.l1_size);
     if (tile_c == 0)
