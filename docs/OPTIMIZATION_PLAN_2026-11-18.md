@@ -138,7 +138,7 @@
 | **E（下一步）** | filter 打包去冗余 / 输入打包优化 | custom_0 再 **-2~4 ms**；11/11 | ⏳ |
 | **B（按需）** | 消除边界拷贝 | 串行 copy <2 ms；算法口径与 ABI 口径分离 | 未启动（identity layout 会崩） |
 | **D（可选）** | 缓存分块 / 余数 peeling（c7） | c7 ≥1.0×；无回退 | ⏳ |
-| **F（阶段 2）** | 单 NUMA 多核，≤38 线程 | t32 ≥800 GF、≥0.5× native、11/11 | ⏳ |
+| **F（阶段 2）** | 单 NUMA 多核，≤38 线程 | t32 ≥800 GF、≥0.5× native、11/11 | 🚧 原型：2.9× / 189 GF，缺 per-thread scratch（§9） |
 
 **硬性约束**：所有多核实验线程数 ≤38，且固定在一个 NUMA 节点；t≥35 的慢模式只允许在
 本节点内做对照，不作为交付数字（该机器 t36+ 的异常见设计文档 §6.1）。
@@ -234,6 +234,66 @@ kblas 对这些尺寸本来就不并行），payload runs=5/warmup=3。
    roofline；可试「按行分段 + 复用行缓冲」减少重复读，预期 -20~30%。
 3. **B 边界拷贝归零**：快 copy 后只剩 ~2 ms，收益小；但它把“算法口径”和“ABI 口径”
    分开，对多核有意义。
-4. **F 多核（≤38 线程，单 NUMA）**：现在串行项已从 85 ms 降到 41 ms，且 copy/fill
-   都不是瓶颈，可以开始。并行点选「batch × 窗口 tile」外层，kblas 保持单线程，
-   任务数 ≥4×线程数。目标 t32 ≥800 GF、≥0.5× `native_impl` t32。
+4. **F 多核（≤38 线程，单 NUMA）**：见 §9 —— 原型已跑通，naive 并行只有 1.8–2.9×，
+   需要先解决 per-thread scratch 才能谈 800 GF。
+
+### 8.5 顺带测到的两个小结论
+
+- **GEMM 后的 `memref.copy %x, %x` 是自拷贝**（源和目标是同一个 SSA 值），
+  每个微内核一次。删掉它 custom_0 只从 39.0 → 39.1 ms —— 在噪声内，
+  不值得为它加 pass；记录在此避免以后重复怀疑。
+- **分配器抖动 ≈5%**：`mallopt(M_MMAP_THRESHOLD=512MB, M_TRIM_THRESHOLD=-1)`
+  让 custom_0 从 106.7 → 112.3 GFLOPS（缺页 72k → 20k）。这是每次调用
+  重新 mmap 5 MB 级 buffer 的代价，PyTorch 用 caching allocator 天然规避。
+  **未默认启用**（属于 harness/分配器口径，不进交付数字）；如果要报“生产口径”，
+  应连同 buffer 复用一起做，而不是只调 allocator。
+
+---
+
+## 9. M3 多核原型（2026-11-18，只做可行性，不含正确性）
+
+### 9.1 做法
+
+在 bufferize 后的 IR 上把**窗口 tile 循环**（`scf.for %arg11 = 0 to 1600 step 160`）
+改成 `scf.parallel`，用 `--convert-scf-to-openmp` 降低，链接 libomp，
+`numactl --cpunodebind=0 --membind=0` 跑 1/2/4/8/16/32 线程。
+（原型故意共享 packed-input scratch，只用于测扩展性，**结果不正确**。）
+
+### 9.2 实测（ms/iter）
+
+| 形状 | 串行 | t1 | t4 | t8 | t16 | t32 | t32 加速 | t32 GF |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| custom_0（10 个窗 tile） | 41 | 43.2 | 29.2 | 26.7 | 24.0 | 23.8 | 1.8× | 177 |
+| custom_6（160 个窗 tile） | 496 | 521 | 262 | 219 | 176 | 180 | **2.9×** | 189 |
+
+### 9.3 结论：naive 并行不够，且踩到三个具体坑
+
+1. **`memref.alloca_scope` 不能包多块体**。MLIR 19.1.7 的 `convert-scf-to-openmp` 会把
+   循环体包进 `memref.alloca_scope`；随后 `--convert-scf-to-cf` 把体展开成多块，
+   verifier 直接报 “expects region #0 to have 0 or 1 blocks”。本 IR 的 scope 里没有任何
+   alloca，所以原型是**手动剥掉**这个 op 才跑通的。正式实现要么直接构造 `omp.parallel`
+   （不经 scf.parallel），要么加一个「删除空 alloca_scope」的小 pass。
+2. **`cf` op 不会被 `--convert-cf-to-llvm` 转换**，除非先跑 `--convert-openmp-to-llvm`
+   把 omp region 变成 LLVM 兼容形态；顺序错了会留下 `cf.br`，JIT 解析时报
+   “Dialect `cf' not found”。正确顺序：`scf-to-openmp → scf-to-cf →
+   func/arith-to-llvm → openmp-to-llvm → cf-to-llvm`。
+3. **scratch 共享是主要瓶颈**。所有线程写同一块 184 KB 的 packed-input buffer，
+   跨核缓存行反复失效；改成「每迭代 `memref.alloc`」消除了竞争，但 malloc/缺页
+   让 t1 从 499 涨到 820 ms。正确做法是**每线程一块 scratch、整轮复用**：
+   `[max_threads][k*Nwin]`，用 `omp_get_thread_num()` 取偏移。
+
+### 9.4 为什么说有希望
+
+- 打包工作量**不随线程数增加**（每个 (batch, 窗 tile) 任务只打包自己的 A），
+  所以理论上接近线性；当前 2.9× 主要是共享 scratch 和 malloc 造成的。
+- 任务数：c6 = batch(4) × 窗 tile(160) = 640，t32 足够；c0 = 40，t32 偏少，
+  多核时可以把 `Nwin` 降到 40/80 来换任务数（单线程会变慢，属于多核专用配置）。
+- 验收线 800 GF 意味着 c6 要 ~5.5×（42 ms）；以 640 个独立任务看是可达的，
+  但必须先解决 9.3 的三点，再谈数字。
+
+### 9.5 M3 的下一步（按顺序）
+
+1. 让 transform 直接产出 `omp.parallel`（或给 `scf.parallel` 路径加空 scope 清理 pass）；
+2. 每线程 scratch（`[T][k*Nwin]` + thread id 偏移），消除共享与 malloc 抖动；
+3. 复用现有 `numactl node0`/≤38 线程约束，扫 t1/2/4/8/16/32，验收 t32 ≥800 GF；
+4. 通过后再考虑「多核专用 tile」：`Nwin` 按线程数下调，换取任务数与负载均衡。
