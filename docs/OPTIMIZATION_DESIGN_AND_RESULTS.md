@@ -610,7 +610,7 @@ python3 scripts/bench_vs_torch/compare_vs_pytorch.py --threads 1,2,4,8,16,32
 | `docs/PERFORMANCE_VS_PYTORCH.md` | **权威性能数据**：18 用例 × 6 线程档、瓶颈证据、复现方法 |
 | 本文 | 设计理念、实现地图、优化项的「为什么/效果/证伪」 |
 | `docs/OPTIMIZATION_JOURNEY_2026-11-19.md` | **演进实录**：每个假设、翻车、根因与决策，包括被证伪的方向 |
-| `docs/html/index.html` | 上述内容的可视化版本（离线 HTML + 17 张 SVG 示意图） |
+| `docs/html/index.html` | 上述内容的可视化版本（离线 HTML 站：8 页 + 21 张 SVG 示意图，含深色模式与术语表） |
 | `docs/FEASIBILITY_VECTORIZED_PACK_MULTICORE.md` | 「向量化打包 + 多核」值不值得做、怎么做、风险与验收 |
 | `docs/OPTIMIZATION_OPPORTUNITIES.md` | 更早的优化机会清单（含 SME/流水线/NHWC 等方案设想）与当前落地状态 |
 | `docs/PERFORMANCE_REPORT.md` | 2026-09 的 ConvBench 初版结果（注意 §6.2 的口径修正） |

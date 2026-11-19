@@ -75,6 +75,7 @@ NAV = [
     ("multicore.html", "多核"),
     ("performance.html", "性能"),
     ("reproduce.html", "复现"),
+    ("glossary.html", "术语"),
 ]
 
 C_TEAL = "#0f766e"
@@ -117,6 +118,10 @@ def head(title, desc, active):
       <span>SConvTransform<small>Kunpeng aarch64 · MLIR</small></span>
     </a>
     <nav class="nav" aria-label="主导航">{nav}</nav>
+    <button class="theme-btn" type="button" aria-label="切换深色/浅色主题" title="切换主题">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
   </div>
 </header>
 """
@@ -526,6 +531,156 @@ def svg_measure_protocol():
     return "".join(s)
 
 
+def svg_im2col():
+    """im2col: how a 3x3 window walk becomes packed matrix columns (9x write amp)."""
+    w, h = 900, 396
+    s = [svg_open(w, h, "im2col：3×3 窗口如何变成打包矩阵的列"),
+         arrow_defs("icArr", C_INDIGO_B)]
+    # ---- input feature map (7x4 grid, cell 30) ----
+    ox, oy, cell = 60, 88, 30
+    gw, gh = 7, 4
+    s.append(txt(ox, 46, "输入特征图（1 个通道，4×7）", 12.5, C_INK, 800))
+    for i in range(gh):
+        for j in range(gw):
+            x, y = ox + j * cell, oy + i * cell
+            s.append(f'<rect x="{x}" y="{y}" width="{cell-2}" height="{cell-2}" rx="4" fill="#f1f5f9" stroke="{C_LINE}"/>')
+    # window w0 (cols 0-2, rows 0-2) teal; w1 (cols 1-3) indigo
+    for (j0, col, lbl) in ((0, C_TEAL_B, "w₀"), (1, C_INDIGO_B, "w₁")):
+        for i in range(3):
+            for j in range(3):
+                x, y = ox + (j0 + j) * cell, oy + i * cell
+                s.append(f'<rect x="{x+1}" y="{y+1}" width="{cell-4}" height="{cell-4}" rx="3" fill="{col}" opacity="0.28" stroke="{col}" stroke-width="1.2"/>')
+        s.append(f'<rect x="{ox + j0*cell}" y="{oy}" width="{3*cell-2}" height="{3*cell-2}" rx="6" fill="none" stroke="{col}" stroke-width="2.2"/>')
+        s.append(txt(ox + j0*cell + (3*cell)/2 - 1, oy - 10, lbl, 12, col, 800, "middle"))
+    # overlap note
+    s.append(f'<rect x="{ox + 1*cell}" y="{oy+1}" width="{2*cell-4}" height="{3*cell-6}" rx="3" fill="none" stroke="{C_RED}" stroke-width="1.6" stroke-dasharray="4 3"/>')
+    s.append(txt(ox + 3*cell/2, oy + 4*cell + 26, "两窗口重叠 2 列 ⇒ 同一元素被写多次", 11, C_RED, 700, "middle"))
+    # ---- arrow ----
+    s.append(path_arrow(316, 148, 392, 148, "icArr", C_INDIGO_B, 2.4))
+    # ---- packed A (9 rows x 3 cols) ----
+    px, py, pc = 420, 88, 22
+    s.append(txt(px, 46, "打包后的 A（K = Nc·9 行 × Nwin 列）", 12.5, C_INK, 800))
+    offsets = ["(0,0)", "(0,1)", "(0,2)", "(1,0)", "(1,1)", "(1,2)", "(2,0)", "(2,1)", "(2,2)"]
+    for r in range(9):
+        for c in range(3):
+            x, y = px + c * pc, py + 18 + r * pc
+            col = C_TEAL_B if c == 0 else (C_INDIGO_B if c == 1 else "#a5b4fc")
+            s.append(f'<rect x="{x}" y="{y}" width="{pc-3}" height="{pc-3}" rx="3" fill="{col}" opacity="0.3" stroke="{col}"/>')
+    for r in range(0, 9, 2):
+        s.append(txt(px - 8, py + 18 + r*pc + pc/2 + 3, offsets[r], 9.5, C_SLATE, 600, "end"))
+    for c, lbl in enumerate(("w₀", "w₁", "w₂")):
+        s.append(txt(px + c*pc + pc/2 - 1, py + 8, lbl, 11, C_SLATE, 800, "middle"))
+    s.append(txt(px, py + 18 + 9*pc + 20, "每列 = 一个窗口的 9 个元素（按 fh,fw 排好）", 10.5, C_SLATE))
+    # ---- GEMM box ----
+    s.append(box(700, 88, 176, 120, "GEMM", "A[Nwin,K] × B[K,Nf]", "#fff7ed", C_AMBER_B, C_AMBER, "#475569", fs=14, sfs=10.5))
+    s.append(path_arrow(664, 148, 696, 148, "icArr", C_INDIGO_B, 2.2))
+    s.append(txt(700, 230, "B = 滤波器打包 [K, Nf]", 10.5, C_SLATE))
+    s.append(txt(700, 248, "C = 输出 tile [Nwin, Nf]", 10.5, C_SLATE))
+    # ---- conclusion strip ----
+    s.append(f'<rect x="420" y="340" width="456" height="40" rx="10" fill="#fef2f2" stroke="#fca5a5"/>')
+    s.append(txt(648, 365, "stride=1 时每个输入元素平均被复制 9 次 —— 打包是带宽问题", 12, C_RED, 700, "middle"))
+    s.append("</svg>")
+    return "".join(s)
+
+
+def svg_waterfall_c0():
+    """custom_0 ms staircase across milestones."""
+    steps = [
+        ("起点", 156.6, "1.55 GHz", "t1 · [64,32]"),
+        ("M1", 115.7, "1.55 GHz", "快速打包 −26%"),
+        ("M2+A", 87.0, "1.55 GHz", "tile 放大"),
+        ("A", 63.1, "1.55 GHz", "快边界拷贝"),
+        ("A+C+G", 33.3, "2.0 GHz", "Nc/Nwin 自适应"),
+        ("M3 t16", 16.2, "2.0 GHz", "窗口并行"),
+        ("M4-c t32", 14.4, "2.0 GHz", "多核专用 Nwin"),
+    ]
+    w, h = 900, 330
+    s = [svg_open(w, h, "custom_0 每迭代毫秒数的演进阶梯")]
+    left, right, top, bottom = 64, 40, 40, 252
+    vmax = 160.0
+    plot_w = w - left - right
+    def px(i):
+        return left + plot_w * i / (len(steps) - 1)
+    def py(v):
+        return bottom - (bottom - top) * (v / vmax)
+    # grid + axis labels every 40ms
+    for g in range(5):
+        v = vmax * g / 4
+        yy = py(v)
+        s.append(f'<line x1="{left}" y1="{yy:.1f}" x2="{w-right}" y2="{yy:.1f}" stroke="#eef2f7" stroke-width="1"/>')
+        s.append(txt(left - 10, yy + 4, f"{v:.0f}", 10.5, "#64748b", 600, "end"))
+    s.append(txt(12, 40, "ms/iter", 10.5, "#64748b", 700))
+    # staircase path
+    pts = []
+    for i, (name, v, era, note) in enumerate(steps):
+        pts.append((px(i), py(v)))
+    path = f'M {pts[0][0]:.1f} {pts[0][1]:.1f}'
+    for i in range(1, len(pts)):
+        prev = pts[i-1]
+        cur = pts[i]
+        path += f' L {cur[0]:.1f} {prev[1]:.1f} L {cur[0]:.1f} {cur[1]:.1f}'
+    # area under path
+    area = path + f' L {pts[-1][0]:.1f} {bottom:.1f} L {pts[0][0]:.1f} {bottom:.1f} Z'
+    s.append(f'<path d="{area}" fill="url(#wfGrad)"/>')
+    s.append(f'<defs><linearGradient id="wfGrad" x1="0" y1="0" x2="0" y2="1">'
+             f'<stop offset="0" stop-color="{C_TEAL_B}" stop-opacity=".22"/>'
+             f'<stop offset="1" stop-color="{C_INDIGO_B}" stop-opacity=".03"/></linearGradient></defs>')
+    s.append(f'<path d="{path}" fill="none" stroke="{C_TEAL}" stroke-width="2.6" stroke-linejoin="round"/>')
+    for i, (name, v, era, note) in enumerate(steps):
+        x, y = pts[i]
+        col = C_TEAL_B if era == "2.0 GHz" else "#94a3b8"
+        s.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="#fff" stroke="{col}" stroke-width="2.6"/>')
+        s.append(txt(x, y - 14, f"{v:g}", 13, C_INK, 800, "middle"))
+        s.append(txt(x, bottom + 22, name, 12, C_INK, 700, "middle"))
+        s.append(txt(x, bottom + 40, note, 10, "#64748b", 500, "middle"))
+        if i < len(steps) - 1:
+            delta = steps[i][1] - steps[i+1][1]
+            if delta > 0:
+                s.append(txt(x + 26, y - 26, f"−{delta:.0f}", 10.5, C_TEAL, 700))
+    s.append(txt(left, 318, "注：M2+A 之前为 1.55 GHz 口径（只看相对变化），A+C+G 起为 2.0 GHz 实测；t16/t32 为多核档。", 11, C_SLATE))
+    s.append("</svg>")
+    return "".join(s)
+
+
+def svg_width_speedup():
+    """Scatter: parallel width vs best speedup, M3 vs M4-c."""
+    w, h = 900, 340
+    s = [svg_open(w, h, "并行宽度 vs 最佳加速比")]
+    left, right, top, bottom = 64, 24, 46, 264
+    vmax = 3.8
+    widths = [5, 10, 20]
+    def px(v):
+        return left + (w - left - right) * (v - 4) / (22 - 4)
+    def py(v):
+        return bottom - (bottom - top) * (v - 1.0) / (vmax - 1.0)
+    # grid
+    for gv in (1.0, 1.5, 2.0, 2.5, 3.0, 3.5):
+        yy = py(gv)
+        s.append(f'<line x1="{left}" y1="{yy:.1f}" x2="{w-right}" y2="{yy:.1f}" stroke="#eef2f7"/>')
+        s.append(txt(left - 10, yy + 4, f"{gv:g}×", 10.5, "#64748b", 600, "end"))
+    for xv in widths:
+        xx = px(xv)
+        s.append(f'<line x1="{xx:.1f}" y1="{top}" x2="{xx:.1f}" y2="{bottom}" stroke="#f1f5f9"/>')
+        s.append(txt(xx, bottom + 20, f"宽度 {xv}", 11, "#64748b", 700, "middle"))
+    # M4-c is relative-to-serial speedup; also draw per-shape
+    m3_pts = [(M3[sh][7], M3[sh][5]) for sh in SHAPES]
+    m4_pts = [(M4[sh][8], M4[sh][5]) for sh in SHAPES]
+    for i, (xv, yv) in enumerate(m3_pts):
+        s.append(f'<circle cx="{px(xv):.1f}" cy="{py(yv):.1f}" r="5" fill="#94a3b8" opacity=".85"/>')
+    for xv, yv in m4_pts:
+        s.append(f'<circle cx="{px(xv):.1f}" cy="{py(yv):.1f}" r="5.5" fill="{C_TEAL_B}" stroke="#fff" stroke-width="1.4"/>')
+    # annotate extremes
+    s.append(txt(px(20) - 6, py(3.52) - 12, "c4：3.52×", 11, C_TEAL, 800, "end"))
+    s.append(txt(px(20) - 6, py(2.58) - 12, "c5：2.58×", 11, C_TEAL, 800, "end"))
+    s.append(txt(px(10) + 8, py(3.14) - 12, "c1：3.14×（调度保护，160）", 11, C_TEAL, 800))
+    s.append(txt(px(10) + 8, py(1.33) + 20, "c7：宽度 10 仍只有 1.33×→1.50×", 11, C_RED, 700))
+    s.append(legend(74, 58, [("M3", "#94a3b8"), ("M4-c", C_TEAL_B)], 11))
+    s.append(txt(left, 316, "宽度是必要条件而不是充分条件：c7 说明串行项与打包带宽同样限制加速比；"
+                "c1/c2/c9 宽度不变（10），收益来自避免调度翻转。", 11, C_SLATE))
+    s.append("</svg>")
+    return "".join(s)
+
+
 def svg_timeline_strip():
     w, h = 900, 150
     s = [svg_open(w, h, "优化里程碑时间线")]
@@ -685,6 +840,7 @@ def build_index():
     <a class="card" href="multicore.html"><h3>多核</h3><p>标记、并行链、per-thread scratch、宽度与调度翻转。</p><p class="small mt-10">multicore.html →</p></a>
     <a class="card" href="performance.html"><h3>性能</h3><p>11 形状单线程/多核数据、线程曲线与测量口径。</p><p class="small mt-10">performance.html →</p></a>
     <a class="card" href="reproduce.html"><h3>复现</h3><p>环境、构建、运行命令、门禁与预期结果。</p><p class="small mt-10">reproduce.html →</p></a>
+    <a class="card" href="glossary.html"><h3>术语表</h3><p>Nwin/Nf/Nc、IS/WS、CSA、roofline、ABI 时间——所有缩写一次讲清。</p><p class="small mt-10">glossary.html →</p></a>
   </div>
   <div class="callout note mt-24"><strong>Markdown 权威数据：</strong>
     <code>docs/PERFORMANCE_VS_PYTORCH.md</code>（附录 C）、
@@ -704,6 +860,16 @@ def build_principles():
     <div class="card accent-teal"><h3>pack</h3><p>im2col 物化，9× 写放大。三种写法都停在 <b>13 GB/s/core</b> ⇒ 已贴带宽顶。</p></div>
     <div class="card accent-amber"><h3>GEMM</h3><p>kblas 微内核，<b>0.7–2.3 TFLOPS</b>（t32）。效率由 <code>m/n/k</code> 与 tile 是否留在 L2 决定。</p></div>
     <div class="card accent-indigo"><h3>unpack</h3><p>还原 NCHW，占 t1 总时间 <b>5–13%</b>，不是瓶颈。</p></div>
+  </div>
+  <div class="diagram mt-24">{svg_im2col()}<div class="caption">im2col 图解：滑动窗口变成打包矩阵的列；重叠区域就是 9× 写放大的来源</div></div>
+  <div class="grid-2 mt-24">
+    <div class="card"><h3>为什么“写得更聪明”没有用</h3>
+      <p>标量、<code>memcpy</code>、合并写三种独立微基准分别测到 <b>13.17 / 13.33 / 12.39 GB/s</b>——
+        三种实现同速，说明瓶颈在单核存储带宽而不是代码写法。继续做 SIMD 化没有空间，这是把打包
+        归为「搬运」而不是「计算」的依据。</p></div>
+    <div class="card"><h3>为什么打包只做一次</h3>
+      <p>一个 <code>[Nc, Fh, Fw, Nwin]</code> 打包块会被 <code>Oc/Nf</code> 次 GEMM 复用；
+        filter 打包只在 <code>Nf</code> 变化时重建。复用的价值远大于单次搬运的速度。</p></div>
   </div>
 </div></section>
 
@@ -789,6 +955,28 @@ OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 \\
 </div></section>
 
 <section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">管线 03.5</span><h2>并行 lowering 的 IR 前后对照</h2>
+    <p>并行不是运行时偷偷开线程：<code>sconv-parallelize</code> 把窗口 tile 循环显式改成 <code>scf.parallel</code>。</p></div>
+  <div class="grid-2">
+    <div class="code-card"><div class="code-head"><span>标记前：串行循环</span><span>MLIR</span></div>
+<pre><code>scf.for %f = 0 to 192 step 192      // filter tile
+  scf.for %w = 0 to 1600 step 160   // 窗口 tile
+    %a = ... pack_input_tile ...    // 写共享 scratch
+    func.call @sgemm_blas_kernel(...)</code></pre></div>
+    <div class="code-card"><div class="code-head"><span>标记后：scf.parallel + 私有槽</span><span>MLIR</span></div>
+<pre><code>scf.for %f = 0 to 192 step 192
+  scf.parallel (%w) = 0 to 1600 step 160 {{
+    %tid = func.call @omp_get_thread_num()
+    %slot = memref.reinterpret_cast ... offset: %tid * slotElems
+    %a = ... pack_input_tile ...    // 写 tid 自己的槽
+    func.call @sgemm_blas_kernel(...)
+  }}</code></pre></div>
+  </div>
+  <div class="callout warn mt-16"><strong>为什么只有这一层能并行：</strong>上层的 <code>%f</code> 循环体内含 filter 打包
+    （写共享 scratch），再上层是 <code>Nc</code> 归约维。并行链的边界就是「写不相交 + body 是完整工作项」。</div>
+</div></section>
+
+<section class="section"><div class="wrap">
   <div class="section-head"><span class="eyebrow">管线 04</span><h2>代码地图</h2></div>
   <div class="table-wrap"><table class="table">
     <thead><tr><th>想改什么</th><th>文件</th><th>关键位置 / 开关</th></tr></thead>
@@ -831,6 +1019,17 @@ def build_timeline():
     <p>完整版见 <code>docs/OPTIMIZATION_JOURNEY_2026-11-19.md</code>。这里保留决策主线与关键数字。</p></div>
   <div class="timeline">{''.join(items)}</div>
   <div class="diagram mt-24">{svg_timeline_strip()}<div class="caption">里程碑与关键数字（2.0 GHz）</div></div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">演进 01.5</span><h2>custom_0：从 156.6 ms 到 14.4 ms</h2>
+    <p>同一形状在整条优化链上的毫秒数。前面几级是 1.55 GHz 口径（只看相对变化），A+C+G 起为 2.0 GHz 实测。</p></div>
+  <div class="diagram">{svg_waterfall_c0()}<div class="caption">单线程三刀（M1/M2+A/A+C+G）把 156.6 压到 33.3；多核两刀（M3/M4-c）再压到 14.4（t32）</div></div>
+  <div class="grid-3 mt-16">
+    <div class="card"><span class="pill teal">−74%</span><h3>单线程</h3><p>156.6 → 33.3 ms。前三刀全是「搬运/ABI」：打包、边界拷贝、tile 自适应。</p></div>
+    <div class="card"><span class="pill indigo">−56%</span><h3>多核</h3><p>33.3 → 14.4 ms（t32）。收益来自窗口并行与多核专用 Nwin。</p></div>
+    <div class="card"><span class="pill amber">≈128 GF</span><h3>天花板</h3><p>单线程已到单核 SVE 峰值的 99–100%，继续压毫秒只能靠多核与串行项。</p></div>
+  </div>
 </div></section>
 
 <section class="section"><div class="wrap">
@@ -916,6 +1115,7 @@ def build_multicore():
       <p class="small mt-10">宽度 40 的 mc40 实测不再更快，因此停在 20–40。</p>
     </div>
   </div>
+  <div class="diagram mt-24">{svg_width_speedup()}<div class="caption">宽度 vs 最佳加速比（相对串行）：灰色 = M3，青色 = M4-c</div></div>
 </div></section>
 
 <section class="section"><div class="wrap">
@@ -996,6 +1196,15 @@ def build_performance():
        [M4["custom_8"][1], M4["custom_8"][2], M4["custom_8"][3], M4["custom_8"][4]])],
       width=880, height=250)}
     <div class="caption">灰色 = M3，青色 = M4-c；纵轴 ms/iter</div></div>
+  <div class="diagram mt-16">{svg_multiline([
+      ("custom_1（Nwin 160）", [M3["custom_1"][1], M3["custom_1"][2], M3["custom_1"][3], M3["custom_1"][4]],
+       [M4["custom_1"][1], M4["custom_1"][2], M4["custom_1"][3], M4["custom_1"][4]]),
+      ("custom_3（Nwin 40）", [M3["custom_3"][1], M3["custom_3"][2], M3["custom_3"][3], M3["custom_3"][4]],
+       [M4["custom_3"][1], M4["custom_3"][2], M4["custom_3"][3], M4["custom_3"][4]]),
+      ("custom_9（Nwin 160）", [M3["custom_9"][1], M3["custom_9"][2], M3["custom_9"][3], M3["custom_9"][4]],
+       [M4["custom_9"][1], M4["custom_9"][2], M4["custom_9"][3], M4["custom_9"][4]])],
+      width=880, height=250)}
+    <div class="caption">调度保护组（c1/c9 保留 160）与降到 40 的 c3：曲线形态与上图一致——t8 之后趋平</div></div>
   <div class="callout warn mt-16"><strong>测量口径：</strong>t≥35 是本机慢模式，不作结论；
     2.0 GHz 固定频率；单 NUMA 节点；线程数 ≤32。</div>
 </div></section>
@@ -1097,6 +1306,63 @@ OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 \\
                 ("复现：命令与门禁", "从构建到单线程/多核运行，再到三层门禁。", "Reproduce"))
 
 
+def build_glossary():
+    groups = [
+        ("Tile 与循环", "indigo", [
+            ("Nwin", "空间窗口 tile", "沿输出空间位置切出的窗口数，直接成为 GEMM 的 <code>m</code>。单线程偏好 160（摊销打包），多核偏好小值（任务更多）。"),
+            ("Nf", "filter tile", "一次微内核处理的输出通道数，即 GEMM 的 <code>n</code>。实测 <code>{16,32}</code> 即最优，继续放大无单调收益。"),
+            ("Nc", "输入通道 tile", "归约维上的通道块，决定 <code>k = Nc·Fh·Fw</code>。它把一次 GEMM 的 k 从 54 拉到 144–288，摊薄固定开销。"),
+            ("窗口组 / K3", "tiling 分组", "<code>tileUsingSCF</code> 按 K3 对窗口做二级分组；K3 随 Nwin 重算，是调度翻转的导火索之一。"),
+            ("并行宽度", "parallel width", "窗口 tile 循环的 trip count（每个并行区的任务数）。M3 只有 5–20，M4-c 提到 10–40；宽度决定多核收益上限。"),
+        ]),
+        ("调度", "teal", [
+            ("IS / WS", "input/weight-stationary", "CSA 的两种打包方向：输入驻留或权重驻留。Nwin 变化可能让同一形状从 IS 翻到 WS，并行时间反而 2 倍。"),
+            ("CSA", "cache-aware schedule", "纯 cache 代价模型，给出 Nc/K2/K3 与 <code>schd</code>。M4-c 用它探测候选 Nwin 是否翻转调度。"),
+            ("调度保护", "schedule guard", "M4-c 的规则：<code>CSA(base).schd != CSA(candidate).schd</code> 时保留 base。c1/c2/c9 因此保持 160。"),
+            ("并行链", "parallel chain", "<code>sconv-parallelize</code> 只折叠「直接嵌套且写不相交」的已标记循环；含共享 scratch 的循环不入链。"),
+            ("per-thread scratch", "私有槽", "并行区内的打包 buffer 扩成 <code>[64][...]</code>，按 <code>omp_get_thread_num()</code> 取槽，整轮复用。"),
+        ]),
+        ("硬件与 roofline", "amber", [
+            ("SVE", "可伸缩向量扩展", "128-bit 向量。2.0 GHz 下单核 SVE 峰值 ≈128 GF；custom_0/9 已到 99–100%。"),
+            ("SME", "可伸缩矩阵扩展", "矩阵引擎（2×4 tile 累加器）。只喂 c9/c10 这类能铺满 16×16 的形状；扩面实测全面更慢。"),
+            ("打包 roofline", "13 GB/s/core", "标量 / memcpy / 合并写三写法同速 ⇒ 带宽上限，不是代码上限。"),
+            ("单 NUMA", "node0 绑定", "多核全部在 <code>numactl --cpunodebind=0 --membind=0</code> 下测；t≥35 是本机慢模式，不作结论。"),
+            ("KBLAS", "微内核库", "GEMM 微内核来源；超出 SVE 口径的吞吐来自其内部对 SME 的使用。"),
+        ]),
+        ("方法与口径", "teal", [
+            ("算法时间 / ABI 时间", "accounting", "tensor→memref 边界拷贝、输出清零等不属于卷积算法；roofline 不同，必须分开计。"),
+            ("差分分解", "differential timing", "删掉某个调用再相减。陷阱：DCE 会连带删除、未初始化内存引入非规格化数；只能删输出端。"),
+            ("同二进制 A/B", "interleaved runs", "同代码只切目标机制、交错 3–6 轮取中位数、未改动用例作噪声底线（±4–7%）。"),
+            ("best-of / geomean", "aggregation", "性能取多轮最小/最佳档；跨形状用几何平均，避免被单一大形状支配。"),
+            ("门禁", "gates", "<code>test_fastpack / test_mk_auto / test_multicore</code> 三层：IR 结构、数值一致、性能阈值。"),
+        ]),
+    ]
+    sections = []
+    for i, (title, accent, terms) in enumerate(groups, 1):
+        cards = "".join(
+            f'<div class="card accent-{accent}"><h3 class="term">{name}</h3>'
+            f'<span class="pill gray">{tag}</span>'
+            f'<p class="mt-10">{desc}</p></div>'
+            for name, tag, desc in terms)
+        sections.append(f"""
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">术语 {i:02d}</span><h2>{title}</h2></div>
+  <div class="grid-3">{cards}</div>
+</div></section>""")
+    body = "".join(sections) + """
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">术语 05</span><h2>阅读顺序建议</h2></div>
+  <div class="grid-3">
+    <div class="card accent-teal"><div class="num">1</div><h3>第一次接触本项目</h3><p>总览 → 原理 → 术语表，再按需读其余页面；Markdown 只在需要完整数据时打开。</p></div>
+    <div class="card accent-indigo"><div class="num">2</div><h3>想改代码</h3><p>管线 → 复现：先过三层门禁，再看演进页的「被证伪方向」，避免重走弯路。</p></div>
+    <div class="card accent-amber"><div class="num">3</div><h3>只想看结论</h3><p>性能页的四张图 + 总览的三条最贵经验即可；每个数字都标注了测量条件。</p></div>
+  </div>
+</div></section>"""
+    return page("术语", "Nwin/Nf/Nc、IS/WS、CSA、roofline 等术语的定义与关联。",
+                "glossary.html", body,
+                ("术语表", "所有缩写、tile 参数与测量口径，一页讲清。", "Glossary"))
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     pages = {
@@ -1107,6 +1373,7 @@ def main():
         "multicore.html": build_multicore(),
         "performance.html": build_performance(),
         "reproduce.html": build_reproduce(),
+        "glossary.html": build_glossary(),
     }
     for name, content in pages.items():
         (OUT / name).write_text(content, encoding="utf-8")
