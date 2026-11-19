@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管线 · SConvTransform</title>
+<meta name="description" content="MLIR transform/pass 管线、M1–M4 的改动与代码地图。">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="SConvTransform 文档首页">
+      <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="3" y="3" width="34" height="34" rx="9" fill="#0b1220"/><rect x="10" y="10" width="20" height="20" rx="5" fill="none" stroke="#14b8a6" stroke-width="2.4"/><rect x="16" y="16" width="8" height="8" rx="2" fill="#6366f1"/></svg>
+      <span>SConvTransform<small>Kunpeng aarch64 · MLIR</small></span>
+    </a>
+    <nav class="nav" aria-label="主导航"><a href="index.html">总览</a><a href="principles.html">原理</a><a href="pipeline.html" class="active">管线</a><a href="timeline.html">演进</a><a href="multicore.html">多核</a><a href="performance.html">性能</a><a href="reproduce.html">复现</a></nav>
+  </div>
+</header>
+<section class="hero compact"><div class="wrap">
+  <div>
+    <span class="eyebrow">Pipeline</span>
+    <h1>管线：从 linalg 到 OpenMP</h1>
+    <p class="lead">一条命令产出可执行的 LLVM IR；每一步都能在 IR 里看到。</p>
+  </div>
+</div></section><section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">管线 01</span><h2>一条命令，从 linalg 到 OpenMP</h2>
+    <p>所有优化都在 transform / pass 层完成；并行不是运行时偷偷开线程，而是 IR 里显式的 <code>scf.parallel</code>。</p></div>
+  <div class="diagram mb-16"><svg viewBox="0 0 900 320" role="img" aria-label="MLIR 优化管线：transform 与 pass" preserveAspectRatio="xMidYMid meet"><defs><marker id="tfArr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs><rect x="20" y="34" width="220" height="70" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.4"/><text x="130.0" y="66.0" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0b1220">linalg.conv</text><text x="130.0" y="84.0" text-anchor="middle" font-size="10.5" fill="#64748b">输入 IR</text><rect x="200" y="34" width="220" height="70" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.4"/><text x="310.0" y="66.0" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0b1220">transform.structured.sconv</text><text x="310.0" y="84.0" text-anchor="middle" font-size="10.5" fill="#64748b">tiling / packing / marker</text><rect x="420" y="34" width="220" height="70" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.4"/><text x="530.0" y="66.0" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0b1220">transform.lower.to_pack</text><text x="530.0" y="84.0" text-anchor="middle" font-size="10.5" fill="#64748b">pack_input_tile</text><rect x="640" y="34" width="220" height="70" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.4"/><text x="750.0" y="66.0" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0b1220">transform.lower.to_blas</text><text x="750.0" y="84.0" text-anchor="middle" font-size="10.5" fill="#64748b">sgemm 微内核</text><path d="M 240 69 L 278 69" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#tfArr)"/><path d="M 460 69 L 498 69" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#tfArr)"/><path d="M 680 69 L 718 69" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#tfArr)"/><text x="20" y="132" font-size="12" fill="#0f766e" font-weight="800" text-anchor="start">sconv-opt passes</text><rect x="20" y="152" width="190" height="70" rx="12" fill="#f0fdfa" stroke="#14b8a6" stroke-width="1.4"/><text x="115.0" y="184.0" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0b1220">-sconv-parallelize</text><text x="115.0" y="202.0" text-anchor="middle" font-size="10" fill="#475569">窗口 tile → scf.parallel</text><rect x="245" y="152" width="190" height="70" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="340.0" y="184.0" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0b1220">-sconv-lower-parallel</text><text x="340.0" y="202.0" text-anchor="middle" font-size="10" fill="#475569">OpenMP + alloca_scope 清理</text><rect x="470" y="152" width="190" height="70" rx="12" fill="#fff7ed" stroke="#f59e0b" stroke-width="1.4"/><text x="565.0" y="184.0" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0b1220">convert-* / LLVM</text><text x="565.0" y="202.0" text-anchor="middle" font-size="10" fill="#475569">可执行 LLVM IR</text><rect x="695" y="152" width="190" height="70" rx="12" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.4"/><text x="790.0" y="184.0" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0b1220">mlir-cpu-runner</text><text x="790.0" y="202.0" text-anchor="middle" font-size="10" fill="#475569">OMP_NUM_THREADS</text><path d="M 210 187 L 243 187" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#tfArr)"/><path d="M 435 187 L 468 187" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#tfArr)"/><path d="M 660 187 L 693 187" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#tfArr)"/><rect x="20" y="256" width="860" height="40" rx="10" fill="#f8fafc" stroke="#cbd5e1"/><text x="36" y="281" font-size="11.5" fill="#475569" font-weight="600" text-anchor="start" font-family="JetBrains Mono, Consolas, monospace">一条命令：sconv-opt -transform=... -sconv-parallelize -sconv-lower-parallel conv.mlir -o conv.llvm.mlir</text></svg><div class="caption">transform 与 pass 的顺序（M3/M4 共用同一条 lowering）</div></div>
+  <div class="code-card"><div class="code-head"><span>端到端命令</span><span>bash</span></div>
+<pre><code>sconv-opt -transform=test/lowering/sconv-blas-fastp-mc.mlir \
+  -sconv-parallelize -sconv-lower-parallel conv.mlir -o conv.mc.llvm.mlir
+OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 \
+  mlir-cpu-runner conv.mc.llvm.mlir -e main -entry-point-result=void \
+  -shared-libs=...,libomp.so</code></pre></div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">管线 02</span><h2>M1–M4 各自改了什么</h2></div>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>阶段</th><th>代码位置</th><th>关键改动</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>M1 快速打包</td><td><code>lib/LowerToPack.cpp</code> + <code>runtime/pack_input_tile.c</code></td><td>标量 gather → 行分段 memcpy；buffer 上提复用</td><td>156.6 → 115.7 ms</td></tr>
+      <tr><td>M2 tile 放大</td><td><code>inputMultipackingOpt</code> + <code>lower.to_pack</code></td><td>支持 multipacking；Nf 8→32</td><td>≈84–87 ms</td></tr>
+      <tr><td>A 自适应 mK</td><td><code>lib/SConv.cpp</code></td><td><code>[0,0]</code> 哨兵 + 最大整除因子</td><td>11/11 无回退</td></tr>
+      <tr><td>A+C+G</td><td><code>fast_memref_copy.c</code>、<code>computeTileC</code>、<code>selectAutoNwin</code></td><td>快边界拷贝、Nc 自适应、Nwin 160</td><td>33.3 ms / 127.7 GF</td></tr>
+      <tr><td>M3 多核</td><td><code>marker</code>、<code>lib/Parallelize.cpp</code></td><td>窗口 tile → scf.parallel；per-thread scratch</td><td>geomean 2.36×</td></tr>
+      <tr><td>M4-c</td><td><code>selectAutoNwinMulticore</code>、marker/scratch 修复</td><td>多核专用 Nwin + CSA 调度保护</td><td>geomean 2.51×</td></tr>
+    </tbody></table></div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">管线 03</span><h2>IR 上看得见的变化</h2>
+    <p>以输入打包为例：从逐元素 <code>linalg.generic</code> 变成一次运行时调用。</p></div>
+  <div class="grid-2">
+    <div class="code-card"><div class="code-head"><span>M1 之前：标量 gather</span><span>MLIR</span></div>
+<pre><code>scf.for %ic ...
+  scf.for %fh ...
+    scf.for %fw ...
+      %v = tensor.extract %in[%n, %ic, %h, %w]
+      tensor.insert %v into %pack[...]</code></pre></div>
+    <div class="code-card"><div class="code-head"><span>M1 之后：行分段 helper</span><span>MLIR</span></div>
+<pre><code>llvm.call @pack_input_tile(
+  %in, %dst, in_off, ow, iw, stride_h, stride_w,
+  dil_h, dil_w, nc, fh, fw, nwin, ...) : ...</code></pre></div>
+  </div>
+  <div class="callout note mt-16"><strong>几何信息显式携带：</strong><code>sconv.pack_geom</code> 记录
+    <code>[Ow, Iw, strideH, strideW, dilH, dilW]</code>，避免从 affine map 反推。</div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">管线 04</span><h2>代码地图</h2></div>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>想改什么</th><th>文件</th><th>关键位置 / 开关</th></tr></thead>
+    <tbody>
+      <tr><td>tiling / packing / 微内核</td><td><code>lib/SConv.cpp</code>、<code>lib/LowerToBLAS.cpp</code></td><td><code>applyTileTo</code>、<code>tileUsingSCF</code></td></tr>
+      <tr><td>输入打包</td><td><code>lib/LowerToPack.cpp</code>、<code>runtime/pack_input_tile.c</code></td><td><code>applyInputPacking</code>、<code>sconv.parallel_scratch</code></td></tr>
+      <tr><td>多核</td><td><code>lib/SConv.cpp</code>、<code>lib/Parallelize.cpp</code>、<code>lib/LowerToPack.cpp</code></td><td>marker、<code>sconv-parallelize</code>、<code>-sconv-lower-parallel</code></td></tr>
+      <tr><td>多核 tile 选择</td><td><code>lib/SConv.cpp</code></td><td><code>selectAutoNwinMulticore</code>、<code>multicore</code> attr</td></tr>
+      <tr><td>门禁</td><td><code>scripts/convbench/</code></td><td><code>test_fastpack.py</code>、<code>test_mk_auto.py</code>、<code>test_multicore.py</code></td></tr>
+    </tbody></table></div>
+</div></section><footer class="footer">
+  <div class="wrap">
+    <div><b>SConvTransform</b> · 离线 HTML 文档站 · 2.0 GHz / 单 NUMA 口径</div>
+    <div>数据源：<code>docs/PERFORMANCE_VS_PYTORCH.md</code> 附录 C ·
+      生成：<code>scripts/docs/build_site.py</code></div>
+  </div>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>演进 · SConvTransform</title>
+<meta name="description" content="优化演进实录：假设、翻车、根因与决策。">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="SConvTransform 文档首页">
+      <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="3" y="3" width="34" height="34" rx="9" fill="#0b1220"/><rect x="10" y="10" width="20" height="20" rx="5" fill="none" stroke="#14b8a6" stroke-width="2.4"/><rect x="16" y="16" width="8" height="8" rx="2" fill="#6366f1"/></svg>
+      <span>SConvTransform<small>Kunpeng aarch64 · MLIR</small></span>
+    </a>
+    <nav class="nav" aria-label="主导航"><a href="index.html">总览</a><a href="principles.html">原理</a><a href="pipeline.html">管线</a><a href="timeline.html" class="active">演进</a><a href="multicore.html">多核</a><a href="performance.html">性能</a><a href="reproduce.html">复现</a></nav>
+  </div>
+</header>
+<section class="hero compact"><div class="wrap">
+  <div>
+    <span class="eyebrow">Journey</span>
+    <h1>演进实录：尝试、翻车与抉择</h1>
+    <p class="lead">从 0.66× 到 2.51×，记录每一步为什么这样做、为什么停。</p>
+  </div>
+</div></section><section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">演进 01</span><h2>时间线：每一次“以为会快”</h2>
+    <p>完整版见 <code>docs/OPTIMIZATION_JOURNEY_2026-11-19.md</code>。这里保留决策主线与关键数字。</p></div>
+  <div class="timeline"><div class="tl-item "><div class="when">2026-09</div>
+          <h3>起点：两条路径</h3><p>native_impl 作为性能探针，MLIR 作为交付物。</p><div class="meta"><span class="pill teal">18 用例 t1–t32 geomean 1.51×–1.62×</span><span class="pill gray">明确“交付 / 上限”分工</span></div></div><div class="tl-item teal"><div class="when">2026-11</div>
+          <h3>M1：快速输入打包</h3><p>标量 gather 换成行分段 memcpy，并把打包 buffer 提到循环外。</p><div class="meta"><span class="pill teal">156.6 → 115.7 ms</span><span class="pill gray">−26%；约 28 ms 来自 buffer 复用</span></div></div><div class="tl-item indigo"><div class="when">2026-11</div>
+          <h3>M2：微内核 tile 放大</h3><p>支持 multipacking，Nf 8→32。微基准很快，但 in-situ 受 L2/DRAM 限制。</p><div class="meta"><span class="pill teal">≈84–87 ms</span><span class="pill gray">原目标 75 ms 未达</span></div></div><div class="tl-item amber"><div class="when">2026-11</div>
+          <h3>A：形状自适应 mK</h3><p>固定 [64,32] 在不整除形状上落入 edge 路径，改用 [0,0] + 最大整除因子。</p><div class="meta"><span class="pill teal">11/11 优于旧 [16,8]</span><span class="pill gray">无回退</span></div></div><div class="tl-item teal"><div class="when">2026-11-18</div>
+          <h3>A+C+G：33.3 ms</h3><p>快边界拷贝、宽 tile Nc 自适应、Nwin=160。单线程追到 1.57×。</p><div class="meta"><span class="pill teal">33.3 ms / 127.7 GF</span><span class="pill gray">10/11 ≥ 1.0×；c7 0.83×</span></div></div><div class="tl-item indigo"><div class="when">2026-11-18</div>
+          <h3>M3：单 NUMA 多核</h3><p>窗口 tile → scf.parallel → OpenMP；per-thread scratch。</p><div class="meta"><span class="pill teal">geomean 2.36×</span><span class="pill gray">最高 338 GF；t16≈t32</span></div></div><div class="tl-item teal"><div class="when">2026-11-19</div>
+          <h3>M4-c：多核专用 Nwin</h3><p>第一版盲目减半翻车；加入 marker/scratch 修复与 CSA 调度保护。</p><div class="meta"><span class="pill teal">geomean 2.51× / 386 GF</span><span class="pill gray">宽度 40 不再更快 → 停手</span></div></div></div>
+  <div class="diagram mt-24"><svg viewBox="0 0 900 150" role="img" aria-label="优化里程碑时间线" preserveAspectRatio="xMidYMid meet"><line x1="40" y1="66" x2="860" y2="66" stroke="#cbd5e1" stroke-width="3"/><circle cx="70" cy="66" r="9" fill="#fff" stroke="#14b8a6" stroke-width="4"/><text x="70" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">M1</text><text x="70" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">pack helper</text><circle cx="230" cy="66" r="9" fill="#fff" stroke="#6366f1" stroke-width="4"/><text x="230" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">M2</text><text x="230" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">tile 放大</text><circle cx="390" cy="66" r="9" fill="#fff" stroke="#f59e0b" stroke-width="4"/><text x="390" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">A+C+G</text><text x="390" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">33.3 ms</text><circle cx="560" cy="66" r="9" fill="#fff" stroke="#8b5cf6" stroke-width="4"/><text x="560" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">M3</text><text x="560" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">2.36×</text><circle cx="750" cy="66" r="9" fill="#fff" stroke="#14b8a6" stroke-width="4"/><text x="750" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">M4-c</text><text x="750" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">2.51×</text><text x="40" y="130" font-size="11.5" fill="#475569" font-weight="500" text-anchor="start">2026-11：单线程从 156.6 ms 追到 33.3 ms；随后多核 2.36× → 2.51×。</text></svg><div class="caption">里程碑与关键数字（2.0 GHz）</div></div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">演进 02</span><h2>怎么判定“真的变快了”</h2>
+    <p>共享节点噪声约 ±4–7%，所以所有结论都建立在同二进制交错 A/B 上，而不是单次运行。</p></div>
+  <div class="diagram mb-16"><svg viewBox="0 0 900 236" role="img" aria-label="测量协议：同二进制 A/B、交错重复、取中位数" preserveAspectRatio="xMidYMid meet"><defs><marker id="mpArr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6366f1"/></marker></defs><text x="20" y="26" font-size="12" fill="#0b1220" font-weight="800" text-anchor="start">为什么不能用单次运行比较两个版本</text><text x="24" y="54" font-size="11.5" fill="#475569" font-weight="700" text-anchor="start">版本 A</text><rect x="90" y="40" width="132" height="20" rx="5" fill="#94a3b8" opacity="0.85"/><text x="156" y="54" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 1</text><rect x="240" y="40" width="132" height="20" rx="5" fill="#94a3b8" opacity="0.6699999999999999"/><text x="306" y="54" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 2</text><rect x="390" y="40" width="132" height="20" rx="5" fill="#94a3b8" opacity="0.49"/><text x="456" y="54" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 3</text><text x="24" y="92" font-size="11.5" fill="#475569" font-weight="700" text-anchor="start">版本 B</text><rect x="90" y="78" width="132" height="20" rx="5" fill="#14b8a6" opacity="0.85"/><text x="156" y="92" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 1</text><rect x="240" y="78" width="132" height="20" rx="5" fill="#14b8a6" opacity="0.6699999999999999"/><text x="306" y="92" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 2</text><rect x="390" y="78" width="132" height="20" rx="5" fill="#14b8a6" opacity="0.49"/><text x="456" y="92" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 3</text><text x="24" y="130" font-size="11.5" fill="#475569" font-weight="700" text-anchor="start">版本 A</text><rect x="90" y="116" width="132" height="20" rx="5" fill="#94a3b8" opacity="0.85"/><text x="156" y="130" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 1</text><rect x="240" y="116" width="132" height="20" rx="5" fill="#94a3b8" opacity="0.6699999999999999"/><text x="306" y="130" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 2</text><rect x="390" y="116" width="132" height="20" rx="5" fill="#94a3b8" opacity="0.49"/><text x="456" y="130" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 3</text><text x="24" y="168" font-size="11.5" fill="#475569" font-weight="700" text-anchor="start">版本 B</text><rect x="90" y="154" width="132" height="20" rx="5" fill="#14b8a6" opacity="0.85"/><text x="156" y="168" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 1</text><rect x="240" y="154" width="132" height="20" rx="5" fill="#14b8a6" opacity="0.6699999999999999"/><text x="306" y="168" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 2</text><rect x="390" y="154" width="132" height="20" rx="5" fill="#14b8a6" opacity="0.49"/><text x="456" y="168" font-size="10.5" fill="#0b1220" font-weight="700" text-anchor="middle">run 3</text><rect x="560" y="34" width="310" height="140" rx="12" fill="#f8fafc" stroke="#cbd5e1"/><text x="578" y="58" font-size="12" fill="#0b1220" font-weight="800" text-anchor="start">判定规则</text><text x="578" y="82" font-size="11.5" fill="#475569" font-weight="500" text-anchor="start">· 交错 A/B/A/B，不跨进程</text><text x="578" y="104" font-size="11.5" fill="#475569" font-weight="500" text-anchor="start">· 每档 3–6 轮，取中位数</text><text x="578" y="126" font-size="11.5" fill="#475569" font-weight="500" text-anchor="start">· 未改动用例 = 噪声底线</text><text x="578" y="148" font-size="11.5" fill="#b91c1c" font-weight="700" text-anchor="start">· 收益 < 噪声 ⇒ 视为无收益</text><text x="20" y="208" font-size="11.5" fill="#475569" font-weight="500" text-anchor="start">本机共享节点噪声约 ±4–7%；自动调优本身也会因计时噪声选到不同配置。</text></svg><div class="caption">测量协议：交错重复、取中位数、用未改动用例给噪声底线</div></div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">演进 03</span><h2>被证伪的方向，同样是结论</h2>
+    <p>记录“为什么不继续”，和记录“为什么继续”一样重要。</p></div>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>方向</th><th>做法</th><th>结果</th><th>判定依据</th></tr></thead>
+    <tbody>
+      <tr><td>打包向量化</td><td>内层换 std::copy 特化</td><td class="flat">0.91–1.06×</td><td>噪声内；clang 已向量化且带宽受限</td></tr>
+      <tr><td>打包三变体</td><td>标量 / memcpy / 合并写</td><td class="flat">13.17 / 13.33 / 12.39 GB/s</td><td>同速 ⇒ 带宽 roofline</td></tr>
+      <tr><td>扩大 SME 覆盖</td><td>c0/c2/c5/c7 路由 SME</td><td class="down">全面更慢</td><td>kernel-only 均低于 GEMM</td></tr>
+      <tr><td>放大 Nf</td><td><code>Nf ∈ {16,32,64,128,256}</code></td><td class="flat"><code>{16,32}</code> 最优</td><td>无单调收益</td></tr>
+      <tr><td>无条件搜 Nc</td><td>所有形状都搜</td><td class="down">thr_n8 −43%</td><td>必须加“饥饿形状 + 3% 门槛”</td></tr>
+      <tr><td>固定 [64,32]</td><td>全局写死</td><td class="down">c5 229→6227 ms</td><td>不整除就落 edge 路径</td></tr>
+      <tr><td>M4 第一版盲目减半</td><td>所有 IC&gt;64 都降到 80</td><td class="down">c1/c2/9 慢 2×</td><td>IS→WS 翻转 + k3 缩小</td></tr>
+      <tr><td>每迭代 memref.alloc</td><td>每次新分配消除共享</td><td class="down">t1 499→820 ms</td><td>malloc/缺页成本</td></tr>
+    </tbody></table></div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">演进 04</span><h2>M4-c 的三次“原来如此”</h2></div>
+  <div class="grid-3">
+    <div class="card accent-amber"><span class="pill amber">根因 1</span><h3>marker 标错循环</h3>
+      <p><code>loopOps[size-2]</code> 在 tiling 顺序翻转时是 filter-subblock。改成找最近的
+        <code>step == nwindows</code> 祖先。</p></div>
+    <div class="card accent-indigo"><span class="pill indigo">根因 2</span><h3>打包被 hoist</h3>
+      <p>被 hoist 的打包只读共享 buffer，不能私有化。只有位于 <code>sconv.parallel</code> 内的打包才打 scratch 标记。</p></div>
+    <div class="card accent-teal"><span class="pill red">根因 3</span><h3>IS → WS 翻转</h3>
+      <p>Nwin=80 让 c1/c2/9 翻到 WS，窗口组从 1600 缩到 400。用 CSA 探测 base/candidate，不同就保留 base。</p></div>
+  </div>
+  <div class="callout good mt-16"><strong>停手判据：</strong>计划 §9.6 预先写明“宽度 40 仍 &lt;600 GF
+    就先做串行项”。M4-c 实测宽度 40 不比 20 快、t16→t32 ≤17%，因此 M4-a/b 暂缓，
+    下一步 E1/E2/B。</div>
+</div></section><footer class="footer">
+  <div class="wrap">
+    <div><b>SConvTransform</b> · 离线 HTML 文档站 · 2.0 GHz / 单 NUMA 口径</div>
+    <div>数据源：<code>docs/PERFORMANCE_VS_PYTORCH.md</code> 附录 C ·
+      生成：<code>scripts/docs/build_site.py</code></div>
+  </div>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

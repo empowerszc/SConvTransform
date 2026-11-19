@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>复现 · SConvTransform</title>
+<meta name="description" content="构建、运行、门禁与预期结果。">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="SConvTransform 文档首页">
+      <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="3" y="3" width="34" height="34" rx="9" fill="#0b1220"/><rect x="10" y="10" width="20" height="20" rx="5" fill="none" stroke="#14b8a6" stroke-width="2.4"/><rect x="16" y="16" width="8" height="8" rx="2" fill="#6366f1"/></svg>
+      <span>SConvTransform<small>Kunpeng aarch64 · MLIR</small></span>
+    </a>
+    <nav class="nav" aria-label="主导航"><a href="index.html">总览</a><a href="principles.html">原理</a><a href="pipeline.html">管线</a><a href="timeline.html">演进</a><a href="multicore.html">多核</a><a href="performance.html">性能</a><a href="reproduce.html" class="active">复现</a></nav>
+  </div>
+</header>
+<section class="hero compact"><div class="wrap">
+  <div>
+    <span class="eyebrow">Reproduce</span>
+    <h1>复现：命令与门禁</h1>
+    <p class="lead">从构建到单线程/多核运行，再到三层门禁。</p>
+  </div>
+</div></section><section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">复现 01</span><h2>环境与构建</h2>
+    <p>依赖 LLVM 19.1.7、kblas、libomp 与 ConvBench payload。</p></div>
+  <div class="code-card"><div class="code-head"><span>构建</span><span>bash</span></div>
+<pre><code>export LLVM=/home/z00889957/000App/clang+llvm-19.1.7-aarch64-linux-gnu
+export PATH=$LLVM/bin:$PATH
+export LD_LIBRARY_PATH=/home/z00889957/miniconda3/lib:$LLVM/lib:$LD_LIBRARY_PATH
+cmake --build build -j 24</code></pre></div>
+  <div class="callout note mt-16"><strong>运行期还需要：</strong>kblas 的 multi 目录、
+    <code>$LLVM/lib/aarch64-unknown-linux-gnu</code>（libomp）、miniconda3/lib、<code>$LLVM/lib</code>。</div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">复现 02</span><h2>单线程与多核</h2></div>
+  <div class="grid-2">
+    <div class="code-card"><div class="code-head"><span>单线程</span><span>bash</span></div>
+<pre><code>python3 scripts/convbench/run_convbench.py \
+  --csv scripts/convbench/samples/custom_conv.csv \
+  --transform test/lowering/sconv-blas-fastp.mlir \
+  --num 11 --runs 5 --warmup 3</code></pre></div>
+    <div class="code-card"><div class="code-head"><span>多核（M4-c）</span><span>bash</span></div>
+<pre><code>build/bin/sconv-opt \
+  -transform=test/lowering/sconv-blas-fastp-mc.mlir \
+  -sconv-parallelize -sconv-lower-parallel \
+  conv.mlir -o conv.mc.llvm.mlir
+
+OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 \
+  $LLVM/bin/mlir-cpu-runner conv.mc.llvm.mlir \
+  -e main -entry-point-result=void \
+  -shared-libs=...,libomp.so</code></pre></div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">复现 03</span><h2>门禁：每一层都有失败测试先行</h2></div>
+  <div class="diagram mb-16"><svg viewBox="0 0 900 300" role="img" aria-label="三层门禁：IR、正确性、性能" preserveAspectRatio="xMidYMid meet"><defs><marker id="gfArr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#14b8a6"/></marker></defs><rect x="20" y="46" width="150" height="78" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.4"/><text x="95.0" y="82.0" text-anchor="middle" font-size="14" font-weight="700" fill="#0b1220">构建</text><text x="95.0" y="100.0" text-anchor="middle" font-size="10" fill="#475569">cmake --build build</text><rect x="185" y="46" width="150" height="78" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="260.0" y="82.0" text-anchor="middle" font-size="14" font-weight="700" fill="#4338ca">ir</text><text x="260.0" y="100.0" text-anchor="middle" font-size="10" fill="#475569">transform 产物结构</text><rect x="350" y="46" width="150" height="78" rx="12" fill="#f0fdfa" stroke="#14b8a6" stroke-width="1.4"/><text x="425.0" y="82.0" text-anchor="middle" font-size="14" font-weight="700" fill="#0f766e">auto</text><text x="425.0" y="100.0" text-anchor="middle" font-size="10" fill="#475569">11 形状 Nwin 表</text><rect x="515" y="46" width="150" height="78" rx="12" fill="#fff7ed" stroke="#f59e0b" stroke-width="1.4"/><text x="590.0" y="82.0" text-anchor="middle" font-size="14" font-weight="700" fill="#b45309">correct</text><text x="590.0" y="100.0" text-anchor="middle" font-size="10" fill="#475569">逐元素一致</text><rect x="680" y="46" width="150" height="78" rx="12" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.4"/><text x="755.0" y="82.0" text-anchor="middle" font-size="14" font-weight="700" fill="#5b21b6">perf</text><text x="755.0" y="100.0" text-anchor="middle" font-size="10" fill="#475569">阈值 + 交错重复</text><path d="M 170 85 L 183 85" fill="none" stroke="#14b8a6" stroke-width="2" marker-end="url(#gfArr)"/><path d="M 335 85 L 348 85" fill="none" stroke="#14b8a6" stroke-width="2" marker-end="url(#gfArr)"/><path d="M 500 85 L 513 85" fill="none" stroke="#14b8a6" stroke-width="2" marker-end="url(#gfArr)"/><path d="M 665 85 L 678 85" fill="none" stroke="#14b8a6" stroke-width="2" marker-end="url(#gfArr)"/><path d="M 755 128 L 755 168 L 95 168 L 95 128" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#gfArr)"/><text x="430" y="162" font-size="11.5" fill="#b91c1c" font-weight="700" text-anchor="middle">任一层失败 → 回退改动，先补失败测试</text><rect x="20" y="196" width="860" height="82" rx="12" fill="#f8fafc" stroke="#cbd5e1"/><text x="38" y="222" font-size="12" fill="#0b1220" font-weight="800" text-anchor="start">门禁对应脚本</text><text x="38" y="245" font-size="11.5" fill="#0f766e" font-weight="700" text-anchor="start" font-family="JetBrains Mono, Consolas, monospace">test_fastpack.py --stage all</text><text x="330" y="245" font-size="11.5" fill="#4338ca" font-weight="700" text-anchor="start" font-family="JetBrains Mono, Consolas, monospace">test_mk_auto.py</text><text x="520" y="245" font-size="11.5" fill="#b45309" font-weight="700" text-anchor="start" font-family="JetBrains Mono, Consolas, monospace">test_multicore.py --stage all</text><text x="38" y="266" font-size="11.5" fill="#475569" font-weight="500" text-anchor="start">IR 结构 / 数值一致 / 性能阈值三层都必须在同一次提交里通过。</text></svg><div class="caption">构建 → ir → auto → correct → perf；任一层失败就回退改动</div></div>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>门禁</th><th>阶段</th><th>检查什么</th><th>当前结果</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_fastpack.py</code></td><td>ir / correct / perf</td><td>输入打包替换为 <code>pack_input_tile</code>；逐元素一致；custom_0 ≤55 ms</td><td class="up">PASS（40.3 ms）</td></tr>
+      <tr><td><code>test_mk_auto.py</code></td><td>ir / perf</td><td>auto IR == 显式 IR；11 形状性能</td><td class="up">PASS</td></tr>
+      <tr><td><code>test_multicore.py</code></td><td>ir / auto / correct / perf</td><td>marker 标对窗口循环；Nwin 表；调度不翻转；5 形状正确；custom_0 t16 ≤24 ms</td><td class="up">PASS（19.5 ms）</td></tr>
+    </tbody></table></div>
+  <div class="grid-3 mt-16">
+    <div class="card accent-teal"><h3>ir</h3><p>显式 pin Nwin，检查并行循环的 step 等于 Nwin；覆盖两种 tiling 顺序。</p></div>
+    <div class="card accent-indigo"><h3>auto</h3><p>11 形状的 Nwin 表 + CSA 调度一致性；c1/c2/9 必须保持 160。</p></div>
+    <div class="card accent-amber"><h3>correct</h3><p>5 形状覆盖私化与共享两条 scratch 路径；另有 11/11（t8/t32）全量复核。</p></div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">复现 04</span><h2>预期结果（2.0 GHz）</h2></div>
+  <div class="grid-2">
+    <div class="card"><h3>单线程</h3><p>custom_0 <b>33.3 ms / 127.7 GF</b>；11 形状 geomean <b>1.57×</b> vs torch t1。</p></div>
+    <div class="card"><h3>多核（M4-c）</h3><p>custom_0 t16 <b>15.8 ms</b>；geomean <b>2.51×</b>；最高 <b>386 GF</b>（custom_4 @t32）。</p></div>
+  </div>
+  <div class="callout warn mt-16"><strong>注意：</strong>共享节点噪声约 ±4–7%；不要用单次运行比较两个版本。
+    线程数 ≤32；t≥35 的慢模式不作为结论。</div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">复现 05</span><h2>文件地图</h2></div>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>路径</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>include/SConv.td</code></td><td><code>sconv</code> transform op，含 <code>multicore</code> attr</td></tr>
+      <tr><td><code>lib/SConv.cpp</code></td><td>tiling、marker、<code>selectAutoNwin*</code></td></tr>
+      <tr><td><code>lib/LowerToPack.cpp</code></td><td>输入打包 lowering、<code>parallel_scratch</code> 标记</td></tr>
+      <tr><td><code>lib/Parallelize.cpp</code></td><td><code>scf.parallel</code> 折叠、per-thread scratch、alloca_scope 清理</td></tr>
+      <tr><td><code>test/lowering/sconv-blas-fastp*.mlir</code></td><td>串行 / 多核 / pinned tile 的 transform 序列</td></tr>
+      <tr><td><code>scripts/convbench/test_*.py</code></td><td>IR / 正确性 / 性能门禁</td></tr>
+    </tbody></table></div>
+</div></section><footer class="footer">
+  <div class="wrap">
+    <div><b>SConvTransform</b> · 离线 HTML 文档站 · 2.0 GHz / 单 NUMA 口径</div>
+    <div>数据源：<code>docs/PERFORMANCE_VS_PYTORCH.md</code> 附录 C ·
+      生成：<code>scripts/docs/build_site.py</code></div>
+  </div>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

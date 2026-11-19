@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>总览 · SConvTransform</title>
+<meta name="description" content="SConvTransform 优化总览：从 0.66× 到 2.51× 的编译器优化轨迹。">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="SConvTransform 文档首页">
+      <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="3" y="3" width="34" height="34" rx="9" fill="#0b1220"/><rect x="10" y="10" width="20" height="20" rx="5" fill="none" stroke="#14b8a6" stroke-width="2.4"/><rect x="16" y="16" width="8" height="8" rx="2" fill="#6366f1"/></svg>
+      <span>SConvTransform<small>Kunpeng aarch64 · MLIR</small></span>
+    </a>
+    <nav class="nav" aria-label="主导航"><a href="index.html" class="active">总览</a><a href="principles.html">原理</a><a href="pipeline.html">管线</a><a href="timeline.html">演进</a><a href="multicore.html">多核</a><a href="performance.html">性能</a><a href="reproduce.html">复现</a></nav>
+  </div>
+</header>
+<section class="hero"><div class="wrap">
+  <div>
+    <span class="eyebrow">MLIR · ConvBench · Kunpeng aarch64</span>
+    <h1>从 <em>0.66×</em> 到 <em>2.51×</em><br>一条编译器管线的优化轨迹</h1>
+    <p class="lead">把卷积拆成 pack → GEMM → unpack 三段，各自贴近自己的 roofline；
+      单线程追上 PyTorch，多核在单 NUMA 节点内做到 2.51×。所有改动都在 IR / transform / pass 层。</p>
+    <div class="chips">
+      <span class="chip"><b>2.0 GHz</b> 固定频率</span>
+      <span class="chip"><b>单 NUMA</b> node0</span>
+      <span class="chip"><b>≤32</b> 线程报数</span>
+      <span class="chip"><b>11/11</b> 正确</span>
+    </div>
+  </div>
+  <div class="hero-panel">
+    <div class="panel-title"><span>SConv pipeline</span><span>live diagram</span></div>
+    <svg viewBox="0 0 620 330" role="img" aria-label="SConv 三阶段流水线：输入打包、GEMM、还原" preserveAspectRatio="xMidYMid meet"><defs><marker id="heroArr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#5eead4"/></marker></defs><rect x="0" y="0" width="620" height="330" rx="16" fill="#0a1627"/><text x="26" y="34" font-size="13" fill="#5eead4" font-weight="800" text-anchor="start">SConv pipeline</text><text x="594" y="34" font-size="11" fill="#7c93b3" font-weight="500" text-anchor="end">3 stages · 1 GEMM call per tile</text><rect x="24" y="58" width="92" height="58" rx="12" fill="#0f2038" stroke="#1e3a5f" stroke-width="1.4"/><text x="70.0" y="84.0" text-anchor="middle" font-size="14" font-weight="700" fill="#dbeafe">Input</text><text x="70.0" y="102.0" text-anchor="middle" font-size="11.5" fill="#8fa6c4">NCHW</text><rect x="154" y="58" width="150" height="58" rx="12" fill="#123b3a" stroke="#1f6f68" stroke-width="1.4"/><text x="229.0" y="84.0" text-anchor="middle" font-size="14" font-weight="700" fill="#ccfbf1">Pack (im2col)</text><text x="229.0" y="102.0" text-anchor="middle" font-size="11.5" fill="#7dd3c0">9× write amp</text><rect x="342" y="58" width="120" height="58" rx="12" fill="#1d2450" stroke="#4f46e5" stroke-width="1.4"/><text x="402.0" y="84.0" text-anchor="middle" font-size="14" font-weight="700" fill="#e0e7ff">GEMM</text><text x="402.0" y="102.0" text-anchor="middle" font-size="11.5" fill="#a5b4fc">kblas</text><rect x="500" y="58" width="96" height="58" rx="12" fill="#2a2140" stroke="#7c3aed" stroke-width="1.4"/><text x="548.0" y="84.0" text-anchor="middle" font-size="14" font-weight="700" fill="#ede9fe">Unpack</text><text x="548.0" y="102.0" text-anchor="middle" font-size="11.5" fill="#c4b5fd">NCHW</text><path d="M 116 87 L 152 87" fill="none" stroke="#5eead4" stroke-width="1.8" marker-end="url(#heroArr)"/><path d="M 304 87 L 340 87" fill="none" stroke="#5eead4" stroke-width="1.8" marker-end="url(#heroArr)"/><path d="M 462 87 L 498 87" fill="none" stroke="#5eead4" stroke-width="1.8" marker-end="url(#heroArr)"/><rect x="154" y="152" width="150" height="46" rx="12" fill="#0f2038" stroke="#1e3a5f" stroke-width="1.4"/><text x="229.0" y="172.0" text-anchor="middle" font-size="12" font-weight="700" fill="#dbeafe">packed A</text><text x="229.0" y="190.0" text-anchor="middle" font-size="10.5" fill="#8fa6c4">[Nc·Fh·Fw, Nwin]</text><rect x="342" y="152" width="120" height="46" rx="12" fill="#0f2038" stroke="#1e3a5f" stroke-width="1.4"/><text x="402.0" y="172.0" text-anchor="middle" font-size="12" font-weight="700" fill="#dbeafe">packed B</text><text x="402.0" y="190.0" text-anchor="middle" font-size="10.5" fill="#8fa6c4">[K, Nf]</text><path d="M 229 116 L 229 150" fill="none" stroke="#5eead4" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#heroArr)"/><path d="M 402 116 L 402 150" fill="none" stroke="#5eead4" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#heroArr)"/><rect x="24" y="246" width="572" height="54" rx="12" fill="#0a1b2e" stroke="#1e3a5f" stroke-width="1.4"/><text x="310.0" y="270.0" text-anchor="middle" font-size="13.5" font-weight="700" fill="#e2e8f0">Output tile  =  A[Nwin, K] × B[K, Nf]</text><text x="310.0" y="288.0" text-anchor="middle" font-size="11" fill="#8fa6c4">Nwin × Nf × (Nc·Fh·Fw) per microkernel call</text><text x="24" y="326" font-size="11.5" fill="#93a9c6" font-weight="500" text-anchor="start">pack 贴单核带宽 roofline；GEMM 贴微内核峰值；unpack 非瓶颈（5–13%）。</text></svg>
+  </div>
+</div></section>
+
+<section class="stats-band"><div class="wrap"><div class="metric-strip">
+  <div class="metric teal"><div class="k">单线程 vs torch t1</div><div class="v">1.57<small>×</small></div><div class="s">11 形状 geomean · 10/11 ≥ 1.0×</div></div>
+  <div class="metric indigo"><div class="k">多核 geomean</div><div class="v">2.51<small>×</small></div><div class="s">M4-c · 单 NUMA · t1–t32</div></div>
+  <div class="metric amber"><div class="k">最高吞吐</div><div class="v">386<small> GF</small></div><div class="s">custom_4 @ t32</div></div>
+  <div class="metric"><div class="k">正确性</div><div class="v">11/11</div><div class="s">t8 与 t32 各一遍</div></div>
+</div></div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head">
+    <span class="eyebrow">两条路径</span>
+    <h2>编译器交付物，与性能上限探针</h2>
+    <p>同一套算法有两种承载方式：一条必须留在 IR 里，一条可以激进地做运行时自适应。</p>
+  </div>
+  <div class="grid-2">
+    <div class="card accent-teal"><span class="pill teal">交付路径</span>
+      <h3>MLIR / ConvBench</h3>
+      <p>交付物是 <code>sconv-opt</code> 一条命令。优化发生在 <code>transform.structured.sconv</code>、
+        packing lowering、<code>-sconv-parallelize</code> 与 OpenMP lowering 中；没有第二套运行时线程池。</p>
+      <p class="small mt-10">成绩：单线程 33.3 ms / 127.7 GF（custom_0），多核 geomean 2.51×。</p>
+    </div>
+    <div class="card accent-indigo"><span class="pill indigo">参考实现</span>
+      <h3>native_impl</h3>
+      <p>不受编译器抽象约束，用来回答“这个算法在 Kunpeng 上到底能跑多快”。它的数字是上限参考，
+        不直接算作交付路径的成绩。</p>
+      <p class="small mt-10">成绩：18 用例 t1–t32 对 PyTorch geomean 1.51×–1.62×。</p>
+    </div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head">
+    <span class="eyebrow">优化阶梯</span>
+    <h2>每一步都先回答“钱花在哪”</h2>
+    <p>从 ABI 时间、打包带宽、微内核粒度，到多核宽度与调度策略——顺序不是随意的。</p>
+  </div>
+  <div class="diagram mb-16"><svg viewBox="0 0 900 150" role="img" aria-label="优化里程碑时间线" preserveAspectRatio="xMidYMid meet"><line x1="40" y1="66" x2="860" y2="66" stroke="#cbd5e1" stroke-width="3"/><circle cx="70" cy="66" r="9" fill="#fff" stroke="#14b8a6" stroke-width="4"/><text x="70" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">M1</text><text x="70" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">pack helper</text><circle cx="230" cy="66" r="9" fill="#fff" stroke="#6366f1" stroke-width="4"/><text x="230" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">M2</text><text x="230" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">tile 放大</text><circle cx="390" cy="66" r="9" fill="#fff" stroke="#f59e0b" stroke-width="4"/><text x="390" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">A+C+G</text><text x="390" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">33.3 ms</text><circle cx="560" cy="66" r="9" fill="#fff" stroke="#8b5cf6" stroke-width="4"/><text x="560" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">M3</text><text x="560" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">2.36×</text><circle cx="750" cy="66" r="9" fill="#fff" stroke="#14b8a6" stroke-width="4"/><text x="750" y="44" font-size="13" fill="#0b1220" font-weight="800" text-anchor="middle">M4-c</text><text x="750" y="96" font-size="11" fill="#475569" font-weight="600" text-anchor="middle">2.51×</text><text x="40" y="130" font-size="11.5" fill="#475569" font-weight="500" text-anchor="start">2026-11：单线程从 156.6 ms 追到 33.3 ms；随后多核 2.36× → 2.51×。</text></svg><div class="caption">里程碑与关键数字（2.0 GHz）</div></div>
+  <div class="grid-3">
+    <div class="card accent-teal"><div class="num">M1</div><h3>快速输入打包</h3>
+      <p>行分段 <code>memcpy</code> + 打包 buffer 上提复用。<b>156.6 → 115.7 ms（−26%）</b>，
+        其中约 28 ms 来自“不再每次落到冷页”。</p></div>
+    <div class="card accent-indigo"><div class="num">M2</div><h3>微内核 tile 放大</h3>
+      <p>支持 multipacking，把 <code>Nf</code> 放大到 32。<b>≈84–87 ms</b>，未达 75 ms；
+        原因是打包后的 A/C 放不进 L2，端到端受 DRAM 限制。</p></div>
+    <div class="card accent-amber"><div class="num">A+C+G</div><h3>边界拷贝与 tile 自适应</h3>
+      <p>快 <code>memrefCopy</code>、宽 tile 下的 <code>Nc</code> 自适应、<code>Nwin=160</code>。
+        <b>33.3 ms / 127.7 GF</b>；单线程 geomean 1.57×。</p></div>
+    <div class="card accent-indigo"><div class="num">M3</div><h3>单 NUMA 多核</h3>
+      <p>窗口 tile 循环 → <code>scf.parallel</code> → OpenMP + per-thread scratch。
+        <b>geomean 2.36×</b>，最高 338 GF；t16≈t32，宽度只有 5–20。</p></div>
+    <div class="card accent-teal"><div class="num">M4-c</div><h3>多核专用 Nwin</h3>
+      <p>多数形状降到 80/40，并用 CSA 探测阻止 IS→WS 翻转。
+        <b>2.51× / 386 GF</b>；宽度 40 不再更快，于是停手。</p></div>
+    <div class="card"><div class="num">下一步</div><h3>串行 / 带宽项</h3>
+      <p>E1 filter 打包去 3/4 冗余 → E2 输入打包分段 → B 边界拷贝。
+        继续加宽（M4-a/b）按实测判据暂缓。</p></div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">关键判断</span><h2>三条最贵的经验</h2></div>
+  <div class="grid-3">
+    <div class="card"><span class="pill red">坑 1</span><h3>归约维不能并行</h3>
+      <p>把 <code>Nc</code> 标成并行，8/11 形状错、max_diff 1e6–1e8。它不是调度问题，是语义错误。</p></div>
+    <div class="card"><span class="pill amber">坑 2</span><h3>“更多任务”不一定更快</h3>
+      <p>Nwin 80 会让 c1/c2/9 翻到 WS、窗口组缩小；任务更多，时间反而 2 倍。tile 选择必须调度感知。</p></div>
+    <div class="card"><span class="pill teal">坑 3</span><h3>微基准快 ≠ 端到端快</h3>
+      <p>warm-cache 里 <code>m16/n32/k108</code> 只要 21 ms，in-situ 仍是 50–60 ms：A/C 放不进 L2。</p></div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">文档地图</span><h2>从哪里继续读</h2>
+    <p>HTML 负责讲清楚“为什么”和“怎么走”；Markdown 负责完整数据与可复现命令。</p></div>
+  <div class="grid-3">
+    <a class="card accent-teal" href="principles.html"><h3>原理</h3><p>三阶段流水线、循环嵌套、tile 参数与 roofline。</p><p class="small mt-10">principles.html →</p></a>
+    <a class="card accent-indigo" href="pipeline.html"><h3>管线</h3><p>transform / pass 的顺序，M1–M4 的 IR 变化与代码地图。</p><p class="small mt-10">pipeline.html →</p></a>
+    <a class="card accent-amber" href="timeline.html"><h3>演进实录</h3><p>每个假设、翻车、根因与决策；包括被证伪的方向。</p><p class="small mt-10">timeline.html →</p></a>
+    <a class="card" href="multicore.html"><h3>多核</h3><p>标记、并行链、per-thread scratch、宽度与调度翻转。</p><p class="small mt-10">multicore.html →</p></a>
+    <a class="card" href="performance.html"><h3>性能</h3><p>11 形状单线程/多核数据、线程曲线与测量口径。</p><p class="small mt-10">performance.html →</p></a>
+    <a class="card" href="reproduce.html"><h3>复现</h3><p>环境、构建、运行命令、门禁与预期结果。</p><p class="small mt-10">reproduce.html →</p></a>
+  </div>
+  <div class="callout note mt-24"><strong>Markdown 权威数据：</strong>
+    <code>docs/PERFORMANCE_VS_PYTORCH.md</code>（附录 C）、
+    <code>docs/OPTIMIZATION_PLAN_2026-11-18.md</code>（§8–§9）、
+    <code>docs/OPTIMIZATION_DESIGN_AND_RESULTS.md</code>（§3.6–§3.12）、
+    <code>docs/OPTIMIZATION_JOURNEY_2026-11-19.md</code>（演进实录）。</div>
+</div></section><footer class="footer">
+  <div class="wrap">
+    <div><b>SConvTransform</b> · 离线 HTML 文档站 · 2.0 GHz / 单 NUMA 口径</div>
+    <div>数据源：<code>docs/PERFORMANCE_VS_PYTORCH.md</code> 附录 C ·
+      生成：<code>scripts/docs/build_site.py</code></div>
+  </div>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

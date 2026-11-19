@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多核 · SConvTransform</title>
+<meta name="description" content="M3/M4 多核：并行链、per-thread scratch、宽度与调度保护。">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="SConvTransform 文档首页">
+      <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="3" y="3" width="34" height="34" rx="9" fill="#0b1220"/><rect x="10" y="10" width="20" height="20" rx="5" fill="none" stroke="#14b8a6" stroke-width="2.4"/><rect x="16" y="16" width="8" height="8" rx="2" fill="#6366f1"/></svg>
+      <span>SConvTransform<small>Kunpeng aarch64 · MLIR</small></span>
+    </a>
+    <nav class="nav" aria-label="主导航"><a href="index.html">总览</a><a href="principles.html">原理</a><a href="pipeline.html">管线</a><a href="timeline.html">演进</a><a href="multicore.html" class="active">多核</a><a href="performance.html">性能</a><a href="reproduce.html">复现</a></nav>
+  </div>
+</header>
+<section class="hero compact"><div class="wrap">
+  <div>
+    <span class="eyebrow">Multicore</span>
+    <h1>多核：把并行留在 IR 里</h1>
+    <p class="lead">窗口 tile → scf.parallel → OpenMP；宽度与调度共同决定收益。</p>
+  </div>
+</div></section><section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">多核 01</span><h2>并行链：只标记一个循环</h2>
+    <p><code>sconv-parallelize</code> 把“直接嵌套的已标记循环链”折成 <code>scf.parallel</code>；
+      共享 scratch 的循环不入链。</p></div>
+  <div class="diagram mb-16"><svg viewBox="0 0 900 360" role="img" aria-label="并行链折叠与 per-thread scratch" preserveAspectRatio="xMidYMid meet"><defs><marker id="pcArr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#14b8a6"/></marker></defs><text x="20" y="26" font-size="12" fill="#0b1220" font-weight="800" text-anchor="start">标记前：窗口 tile 循环在串行链里</text><rect x="20" y="46" width="250" height="34" rx="12" fill="#eef2ff" stroke="#cbd5e1" stroke-width="1.4"/><text x="145.0" y="68.0" text-anchor="middle" font-size="12" font-weight="700" fill="#0b1220">batch</text><rect x="20" y="92" width="250" height="34" rx="12" fill="#fef2f2" stroke="#cbd5e1" stroke-width="1.4"/><text x="145.0" y="114.0" text-anchor="middle" font-size="12" font-weight="700" fill="#0b1220">Nc（归约）</text><rect x="20" y="138" width="250" height="34" rx="12" fill="#fffbeb" stroke="#cbd5e1" stroke-width="1.4"/><text x="145.0" y="160.0" text-anchor="middle" font-size="12" font-weight="700" fill="#0b1220">窗口组 / filter</text><rect x="20" y="184" width="250" height="34" rx="12" fill="#f0fdfa" stroke="#cbd5e1" stroke-width="1.4"/><text x="145.0" y="206.0" text-anchor="middle" font-size="12" font-weight="700" fill="#0b1220">窗口 tile ★</text><rect x="20" y="230" width="250" height="56" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.4"/><text x="145.0" y="255.0" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">body：pack → GEMM</text><text x="145.0" y="273.0" text-anchor="middle" font-size="10.5" fill="#64748b">写 C 的同一列</text><text x="500" y="26" font-size="12" fill="#0b1220" font-weight="800" text-anchor="start">标记后：折叠成 scf.parallel</text><rect x="500" y="46" width="360" height="70" rx="12" fill="#f0fdfa" stroke="#14b8a6" stroke-width="1.4"/><text x="680.0" y="78.0" text-anchor="middle" font-size="13" font-weight="700" fill="#0f766e">scf.parallel  0 .. Ohw step Nwin</text><text x="680.0" y="96.0" text-anchor="middle" font-size="10.5" fill="#475569">每个迭代 = 一个完整工作项</text><rect x="500" y="140" width="360" height="60" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="680.0" y="167.0" text-anchor="middle" font-size="13" font-weight="700" fill="#4338ca">per-thread scratch</text><text x="680.0" y="185.0" text-anchor="middle" font-size="10.5" fill="#475569">[64][Nc·Fh·Fw·Nwin]</text><rect x="500" y="224" width="360" height="62" rx="12" fill="#fff7ed" stroke="#f59e0b" stroke-width="1.4"/><text x="680.0" y="252.0" text-anchor="middle" font-size="13" font-weight="700" fill="#b45309">sgemm × (Oc/Nf)</text><text x="680.0" y="270.0" text-anchor="middle" font-size="10.5" fill="#475569">写不相交 C 列</text><path d="M 380 183 L 496 86" fill="none" stroke="#14b8a6" stroke-width="2.2" marker-end="url(#pcArr)"/><path d="M 680 116 L 680 138" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#pcArr)"/><path d="M 680 200 L 680 222" fill="none" stroke="#f59e0b" stroke-width="2" marker-end="url(#pcArr)"/><text x="380" y="300" font-size="11" fill="#475569" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, Consolas, monospace">slot = omp_get_thread_num()</text><text x="380" y="320" font-size="11" fill="#b91c1c" font-weight="600" text-anchor="middle">槽必须 ≥ 实际线程数</text></svg><div class="caption">窗口 tile 循环 → scf.parallel；scratch 按线程取槽</div></div>
+  <div class="grid-3">
+    <div class="card accent-teal"><h3>标记</h3><p>从微内核向上找最近的 <code>step == nwindows</code> 循环；不再用位置索引。</p></div>
+    <div class="card accent-indigo"><h3>私化</h3><p>打包在并行区内 → scratch 扩成 <code>[64][...]</code>，按 <code>omp_get_thread_num()</code> 取槽。</p></div>
+    <div class="card accent-amber"><h3>共享</h3><p>打包被 hoist 到并行区外 → buffer 只读，保持共享，不打 <code>parallel_scratch</code>。</p></div>
+  </div>
+  <div class="callout bad mt-16"><strong>正确性红线：</strong>Nc 是 GEMM 的归约维。原型并行 Nc 后
+    8/11 形状错、max_diff 1e6–1e8。现在只并行写不相交 C 列的窗口 tile。</div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">多核 02</span><h2>M3：宽度只有 5–20</h2>
+    <p>线程数超过任务数后只是空转；t16 与 t32 基本持平。</p></div>
+  <div class="grid-2">
+    <div class="diagram"><svg viewBox="0 0 880 250" role="img" aria-label="线程扩展曲线" preserveAspectRatio="xMidYMid meet"><rect x="20.0" y="10" width="266.0" height="230" rx="10" fill="#f8fafc" stroke="#cbd5e1"/><text x="32.0" y="29" font-size="12" fill="#0b1220" font-weight="800" text-anchor="start">custom_0</text><line x1="46.0" y1="34.0" x2="278.0" y2="34.0" stroke="#e2e8f0" stroke-width="1"/><line x1="46.0" y1="94.66666666666666" x2="278.0" y2="94.66666666666666" stroke="#e2e8f0" stroke-width="1"/><line x1="46.0" y1="155.33333333333331" x2="278.0" y2="155.33333333333331" stroke="#e2e8f0" stroke-width="1"/><line x1="46.0" y1="216.0" x2="278.0" y2="216.0" stroke="#e2e8f0" stroke-width="1"/><text x="50.0" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t1</text><text x="125.33333333333333" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t8</text><text x="200.66666666666666" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t16</text><text x="276.0" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t32</text><polyline points="50.0,47.5 125.3,127.4 200.7,137.1 276.0,139.0" fill="none" stroke="#94a3b8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><circle cx="50.0" cy="47.5" r="3.2" fill="#94a3b8"/><circle cx="125.3" cy="127.4" r="3.2" fill="#94a3b8"/><circle cx="200.7" cy="137.1" r="3.2" fill="#94a3b8"/><circle cx="276.0" cy="139.0" r="3.2" fill="#94a3b8"/><polyline points="50.0,49.9 125.3,134.7 200.7,139.0 276.0,145.9" fill="none" stroke="#14b8a6" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><circle cx="50.0" cy="49.9" r="3.2" fill="#14b8a6"/><circle cx="125.3" cy="134.7" r="3.2" fill="#14b8a6"/><circle cx="200.7" cy="139.0" r="3.2" fill="#14b8a6"/><circle cx="276.0" cy="145.9" r="3.2" fill="#14b8a6"/><rect x="300.0" y="10" width="266.0" height="230" rx="10" fill="#f8fafc" stroke="#cbd5e1"/><text x="312.0" y="29" font-size="12" fill="#0b1220" font-weight="800" text-anchor="start">custom_4</text><line x1="326.0" y1="34.0" x2="558.0" y2="34.0" stroke="#e2e8f0" stroke-width="1"/><line x1="326.0" y1="94.66666666666666" x2="558.0" y2="94.66666666666666" stroke="#e2e8f0" stroke-width="1"/><line x1="326.0" y1="155.33333333333331" x2="558.0" y2="155.33333333333331" stroke="#e2e8f0" stroke-width="1"/><line x1="326.0" y1="216.0" x2="558.0" y2="216.0" stroke="#e2e8f0" stroke-width="1"/><text x="330.0" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t1</text><text x="405.3333333333333" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t8</text><text x="480.66666666666663" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t16</text><text x="556.0" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t32</text><polyline points="330.0,47.5 405.3,148.2 480.7,163.5 556.0,162.6" fill="none" stroke="#94a3b8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><circle cx="330.0" cy="47.5" r="3.2" fill="#94a3b8"/><circle cx="405.3" cy="148.2" r="3.2" fill="#94a3b8"/><circle cx="480.7" cy="163.5" r="3.2" fill="#94a3b8"/><circle cx="556.0" cy="162.6" r="3.2" fill="#94a3b8"/><polyline points="330.0,50.0 405.3,155.6 480.7,163.4 556.0,172.2" fill="none" stroke="#14b8a6" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><circle cx="330.0" cy="50.0" r="3.2" fill="#14b8a6"/><circle cx="405.3" cy="155.6" r="3.2" fill="#14b8a6"/><circle cx="480.7" cy="163.4" r="3.2" fill="#14b8a6"/><circle cx="556.0" cy="172.2" r="3.2" fill="#14b8a6"/><rect x="580.0" y="10" width="266.0" height="230" rx="10" fill="#f8fafc" stroke="#cbd5e1"/><text x="592.0" y="29" font-size="12" fill="#0b1220" font-weight="800" text-anchor="start">custom_8</text><line x1="606.0" y1="34.0" x2="838.0" y2="34.0" stroke="#e2e8f0" stroke-width="1"/><line x1="606.0" y1="94.66666666666666" x2="838.0" y2="94.66666666666666" stroke="#e2e8f0" stroke-width="1"/><line x1="606.0" y1="155.33333333333331" x2="838.0" y2="155.33333333333331" stroke="#e2e8f0" stroke-width="1"/><line x1="606.0" y1="216.0" x2="838.0" y2="216.0" stroke="#e2e8f0" stroke-width="1"/><text x="610.0" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t1</text><text x="685.3333333333334" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t8</text><text x="760.6666666666666" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t16</text><text x="836.0" y="233" font-size="9.5" fill="#64748b" font-weight="600" text-anchor="middle">t32</text><polyline points="610.0,50.3 685.3,146.6 760.7,160.8 836.0,156.9" fill="none" stroke="#94a3b8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><circle cx="610.0" cy="50.3" r="3.2" fill="#94a3b8"/><circle cx="685.3" cy="146.6" r="3.2" fill="#94a3b8"/><circle cx="760.7" cy="160.8" r="3.2" fill="#94a3b8"/><circle cx="836.0" cy="156.9" r="3.2" fill="#94a3b8"/><polyline points="610.0,47.5 685.3,152.9 760.7,161.6 836.0,169.1" fill="none" stroke="#14b8a6" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><circle cx="610.0" cy="47.5" r="3.2" fill="#14b8a6"/><circle cx="685.3" cy="152.9" r="3.2" fill="#14b8a6"/><circle cx="760.7" cy="161.6" r="3.2" fill="#14b8a6"/><circle cx="836.0" cy="169.1" r="3.2" fill="#14b8a6"/></svg>
+      <div class="caption">灰色 = M3，青色 = M4-c；纵轴 ms/iter，横轴线程数</div></div>
+    <div class="card"><h3>宽度从哪来</h3>
+      <p>并行宽度 = 每个窗口组里的窗口 tile 数，由 <code>Ohw</code>、<code>Nwin</code> 和分组方式共同决定。</p>
+      <div class="table-wrap mt-16"><table class="table" style="min-width:0">
+        <thead><tr><th>形状</th><th>M3 宽度</th><th>M4-c 宽度</th></tr></thead>
+        <tbody>
+          <tr><td>c0/c4/c6/c8/c10</td><td>10</td><td class="best">20</td></tr>
+          <tr><td>c3/c7</td><td>5</td><td class="best">10</td></tr>
+          <tr><td>c5</td><td>20</td><td>20</td></tr>
+          <tr><td>c1/c2/c9</td><td>10</td><td>10（调度保护）</td></tr>
+        </tbody></table></div>
+      <p class="small mt-10">宽度 40 的 mc40 实测不再更快，因此停在 20–40。</p>
+    </div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">多核 03</span><h2>M4-c：多核专用 Nwin 与调度保护</h2>
+    <p>“任务更多”不一定更快。Nwin 会改变 k3 / tile_c，甚至翻转 IS/WS。</p></div>
+  <div class="diagram mb-16"><svg viewBox="0 0 900 370" role="img" aria-label="M4-c 的多核 Nwin 决策与 IS/WS 保护" preserveAspectRatio="xMidYMid meet"><defs><marker id="stArr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs><rect x="330" y="18" width="240" height="50" rx="12" fill="#0b1526" stroke="#334155" stroke-width="1.4"/><text x="450.0" y="48.0" text-anchor="middle" font-size="14" font-weight="700" fill="#e2e8f0">自动选择 Nwin</text><rect x="330" y="96" width="240" height="54" rx="12" fill="#fff7ed" stroke="#f59e0b" stroke-width="1.4"/><text x="450.0" y="120.0" text-anchor="middle" font-size="13" font-weight="700" fill="#b45309">IC ≤ 64 ?</text><text x="450.0" y="138.0" text-anchor="middle" font-size="10.5" fill="#475569">薄通道 / 打包受限</text><path d="M 450 68 L 450 94" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#stArr)"/><rect x="600" y="96" width="270" height="54" rx="12" fill="#f0fdfa" stroke="#14b8a6" stroke-width="1.4"/><text x="735.0" y="128.0" text-anchor="middle" font-size="12" font-weight="700" fill="#0f766e">保持串行 tile（c5：160）</text><path d="M 570 123 L 598 123" fill="none" stroke="#f59e0b" stroke-width="1.8" marker-end="url(#stArr)"/><text x="578" y="112" font-size="11" fill="#b45309" font-weight="700" text-anchor="start">是</text><rect x="330" y="180" width="240" height="54" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="450.0" y="204.0" text-anchor="middle" font-size="12" font-weight="700" fill="#4338ca">candidate = min(base,80)</text><text x="450.0" y="222.0" text-anchor="middle" font-size="11.5" fill="#475569">Ohw/cand < 8 → 40</text><path d="M 450 150 L 450 178" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#stArr)"/><text x="458" y="170" font-size="11" fill="#475569" font-weight="700" text-anchor="start">否</text><rect x="330" y="264" width="240" height="54" rx="12" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.4"/><text x="450.0" y="296.0" text-anchor="middle" font-size="11.5" font-weight="700" fill="#5b21b6">CSA(base).schd == CSA(cand).schd ?</text><path d="M 450 234 L 450 262" fill="none" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#stArr)"/><rect x="600" y="256" width="270" height="70" rx="12" fill="#f0fdfa" stroke="#14b8a6" stroke-width="1.4"/><text x="735.0" y="288.0" text-anchor="middle" font-size="13" font-weight="700" fill="#0f766e">采用 candidate</text><text x="735.0" y="306.0" text-anchor="middle" font-size="10.5" fill="#475569">c0/c3/c4/c6/c7/c8/c10</text><rect x="20" y="256" width="270" height="70" rx="12" fill="#fef2f2" stroke="#ef4444" stroke-width="1.4"/><text x="155.0" y="288.0" text-anchor="middle" font-size="13" font-weight="700" fill="#b91c1c">保持 base（160）</text><text x="155.0" y="306.0" text-anchor="middle" font-size="10.5" fill="#475569">c1/c2/c9：IS → WS 翻转</text><path d="M 570 291 L 598 291" fill="none" stroke="#14b8a6" stroke-width="1.8" marker-end="url(#stArr)"/><text x="578" y="280" font-size="11" fill="#0f766e" font-weight="700" text-anchor="start">是</text><path d="M 330 291 L 292 291" fill="none" stroke="#ef4444" stroke-width="1.8" marker-end="url(#stArr)"/><text x="310" y="280" font-size="11" fill="#b91c1c" font-weight="700" text-anchor="start">否</text><text x="450" y="352" font-size="11.5" fill="#475569" font-weight="600" text-anchor="middle">Nwin 会改变 k3 / tile_c，进而改变 IS/WS —— 只看任务数会得到“更多但更慢”。</text></svg><div class="caption">M4-c 的 Nwin 决策树；c1/c2/9 因 IS→WS 翻转保留 160</div></div>
+  <div class="grid-2">
+    <div class="card accent-teal"><h3>采用 candidate</h3>
+      <p>c0/c4/c6/c8/c10：80；c3/c7：40。宽度翻倍，提升 12%–20%（c3/c7 约 6%–8%）。</p></div>
+    <div class="card accent-amber"><h3>保留 base</h3>
+      <p>c5（IC=48，打包受限）；c1/c2/9（Nwin=80 翻到 WS，且 c2/9 的窗口组缩到 400，宽度反而 10→5）。</p></div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">多核 04</span><h2>M4-c 结果：2.51× / 386 GF</h2></div>
+  <div class="table-wrap"><table class="table">
+<thead><tr><th>形状</th><th>串行</th><th>t1</th><th>t8</th><th>t16</th><th>t32</th><th>加速比</th><th>GF</th><th>Nwin</th><th>宽度</th></tr></thead>
+<tbody><tr><td>custom_0</td><td>31.5</td><td>34.1</td><td>16.7</td><td>15.8</td><td class="best">14.4</td><td>2.19×</td><td>295</td><td>80</td><td>20</td></tr><tr><td>custom_1</td><td>622.2</td><td>668.1</td><td>264.6</td><td>201.4</td><td class="best">198.0</td><td>3.14×</td><td>343</td><td>160</td><td>10</td></tr><tr><td>custom_2</td><td>34.9</td><td>40.3</td><td>22.0</td><td class="best">18.1</td><td>18.4</td><td>1.93×</td><td>231</td><td>160</td><td>10</td></tr><tr><td>custom_3</td><td>229.0</td><td>249.7</td><td>147.3</td><td>131.5</td><td class="best">128.0</td><td>1.79×</td><td>133</td><td>40</td><td>10</td></tr><tr><td>custom_4</td><td>618.3</td><td>666.4</td><td>242.5</td><td>211.3</td><td class="best">175.9</td><td>3.52×</td><td>386</td><td>80</td><td>20</td></tr><tr><td>custom_5</td><td>45.1</td><td>48.5</td><td>21.2</td><td>18.8</td><td class="best">17.5</td><td>2.58×</td><td>243</td><td>160</td><td>20</td></tr><tr><td>custom_6</td><td>426.5</td><td>458.9</td><td>170.4</td><td>151.3</td><td class="best">131.6</td><td>3.24×</td><td>258</td><td>80</td><td>20</td></tr><tr><td>custom_7</td><td>15.3</td><td>17.5</td><td>11.5</td><td>10.4</td><td class="best">10.2</td><td>1.50×</td><td>104</td><td>40</td><td>10</td></tr><tr><td>custom_8</td><td>169.2</td><td>175.8</td><td>65.8</td><td>56.7</td><td class="best">48.9</td><td>3.46×</td><td>347</td><td>80</td><td>20</td></tr><tr><td>custom_9</td><td>130.8</td><td>142.6</td><td>69.8</td><td>51.8</td><td class="best">51.6</td><td>2.53×</td><td>329</td><td>160</td><td>10</td></tr><tr><td>custom_10</td><td>74.0</td><td>80.0</td><td>34.0</td><td>31.6</td><td class="best">26.9</td><td>2.75×</td><td>316</td><td>80</td><td>20</td></tr></tbody></table></div>
+  <div class="grid-3 mt-16">
+    <div class="card accent-teal"><h3>geomean</h3><p><b>2.51×</b>（M3 2.36×）；相对 M3 best-time geomean 1.08×。</p></div>
+    <div class="card accent-indigo"><h3>最高吞吐</h3><p><b>386 GF</b>（custom_4 @t32）；9/11 形状提升。</p></div>
+    <div class="card accent-amber"><h3>正确性</h3><p><b>11/11</b>（t8、t32）；门禁 <code>test_multicore.py --stage all</code> 全绿。</p></div>
+  </div>
+</div></section>
+
+<section class="section"><div class="wrap">
+  <div class="section-head"><span class="eyebrow">多核 05</span><h2>五个实现坑</h2></div>
+  <div class="grid-2">
+    <div class="card"><h3>1. alloca_scope 锁死 lowering</h3><p><code>convert-scf-to-openmp</code> 无条件包 scope，随后 verifier 报错。新增 <code>sconv-erase-alloca-scope</code>。</p></div>
+    <div class="card"><h3>2. reinterpret_cast 的 offset</h3><p>私化后 offset 要以 base 为基准加 <code>tid * slotElements</code>，结果类型改成动态 offset。</p></div>
+    <div class="card"><h3>3. 不能每迭代 alloc</h3><p>每次新分配让 t1 从 499 → 820 ms；改成 <code>[64][...]</code> 槽整轮复用。</p></div>
+    <div class="card"><h3>4. 窗口循环不能按位置选</h3><p>tiling 顺序会翻转；按 <code>step == nwindows</code> 找。</p></div>
+    <div class="card"><h3>5. 不是所有打包都在并行区</h3><p>hoist 的打包只读共享 buffer；无条件私化会让 pass 拒绝构建。</p></div>
+    <div class="card accent-teal"><h3>结论</h3><p>能解释“为什么不继续”与“为什么继续”同样重要：M4-a/b 暂缓，先做 E1/E2/B。</p></div>
+  </div>
+</div></section><footer class="footer">
+  <div class="wrap">
+    <div><b>SConvTransform</b> · 离线 HTML 文档站 · 2.0 GHz / 单 NUMA 口径</div>
+    <div>数据源：<code>docs/PERFORMANCE_VS_PYTORCH.md</code> 附录 C ·
+      生成：<code>scripts/docs/build_site.py</code></div>
+  </div>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

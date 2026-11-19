@@ -7,6 +7,9 @@
 > 最近更新：2026-11-19（MLIR：单线程 A+C+G 追到 **geomean 1.57× vs torch t1**；
 > M3 多核正式实现 **geomean 2.36×**；M4-c 多核专用 `Nwin` 再提到 **geomean 2.51×**。
 > 文中绝对 ms 均为 2.0 GHz 重测；1.55 GHz 时代的数据只用于看相对变化，已逐处标注）
+>
+> 可视化版（离线 HTML + SVG 示意图）：`docs/html/index.html`；
+> 演进过程实录：`docs/OPTIMIZATION_JOURNEY_2026-11-19.md`。
 
 ---
 
@@ -477,10 +480,10 @@ CSA 按 L3 容量和 `Nwin` 反推。于是「把 `Nwin` 减半」并不保证�
 
 **实测（2.0 GHz，node0，t1/t8/t16/t32 取最佳）**：geomean **2.51×**（M3 2.36×），
 相对 M3 的最佳时间 geomean **1.08×**；custom_4 3.52×/386 GF，custom_8 3.46×/347 GF，
-custom_1 3.14×/343 GF，custom_10 2.75×/315 GF。9 个形状提升，custom_5/9 与 M3
+custom_1 3.14×/343 GF，custom_10 2.75×/316 GF。9 个形状提升，custom_5/9 与 M3
 同配置持平（噪声内）。完整表见 `PERFORMANCE_VS_PYTORCH.md` 附录 C.2。
 正确性 **11/11（t8、t32 各一遍）**，`test_multicore.py --stage all` 全绿
-（ir 6 / auto 11 / correct 5 / perf c0 t16 15.7 ms）。
+（ir 6 / auto 11 / correct 5 / perf c0 t16 19.5 ms，阈值 24；此前一次为 15.7 ms）。
 
 **为什么到此为止（M4-a/b 暂缓）**：M4-c 后多数形状宽度已到 20–40，但 t16→t32 仍只涨
 ≤17%；手工把宽度从 20 加到 40（mc40）在 best-of 上不比 20 快（custom_0 14.5 vs 14.4，
@@ -511,10 +514,12 @@ E1（filter 打包去 3/4 冗余）、E2（输入打包分段）、B（边界拷
    MLIR 路径经 A/C/G 后，custom_0/custom_9 已到单核 SVE 峰值（≈128 GF）的 99–100%，
    custom_10 87%。**超过 SVE 口径的部分只能来自 KBLAS 内部对矩阵引擎（SME）的使用**，
    所以单线程在 SVE 意义上已无余量；剩下的是小形状（c7：1.06 GFLOP）的固定开销与 GEMM 粒度。
-2. **多核的 GFLOPS 受「并行宽度」而不是核数限制**：M3 的宽度 = 窗口 tile 循环 trip count，
-   只有 5–20，所以 t16 与 t32 持平（§3.11）。加核之前必须先加宽。
+2. **多核的 GFLOPS 曾受「并行宽度」而不是核数限制**：M3 的宽度 = 窗口 tile 循环
+   trip count，只有 5–20，所以 t16 与 t32 持平（§3.11）。M4-c 把多数形状提到 20–40，
+   但 t16→t32 仍只涨 ≤17%、宽度 40 也不比 20 快（§3.12），说明**继续加宽已到边际**，
+   剩下的是打包/串行项。
 3. **不是所有用例都该线性扩展**：`custom_1/custom_3` 这类大通道用例 t1 就有 2.0–2.2× 优势，
-   多核时受打包带宽与宽度约束，实测 3.1×/1.7×，不会到 16×。
+   多核时受打包带宽与宽度约束，实测 3.1×/1.8×，不会到 16×。
 4. 加速比矩阵（after/torch）与自身提升矩阵（after/before）分别在
    `docs/PERFORMANCE_VS_PYTORCH.md` §3.2 / §3.3，**不要混用**：
    前者是 `native_impl` 18 用例，后者的 MLIR 11 形状表在
@@ -604,6 +609,8 @@ python3 scripts/bench_vs_torch/compare_vs_pytorch.py --threads 1,2,4,8,16,32
 |---|---|
 | `docs/PERFORMANCE_VS_PYTORCH.md` | **权威性能数据**：18 用例 × 6 线程档、瓶颈证据、复现方法 |
 | 本文 | 设计理念、实现地图、优化项的「为什么/效果/证伪」 |
+| `docs/OPTIMIZATION_JOURNEY_2026-11-19.md` | **演进实录**：每个假设、翻车、根因与决策，包括被证伪的方向 |
+| `docs/html/index.html` | 上述内容的可视化版本（离线 HTML + 17 张 SVG 示意图） |
 | `docs/FEASIBILITY_VECTORIZED_PACK_MULTICORE.md` | 「向量化打包 + 多核」值不值得做、怎么做、风险与验收 |
 | `docs/OPTIMIZATION_OPPORTUNITIES.md` | 更早的优化机会清单（含 SME/流水线/NHWC 等方案设想）与当前落地状态 |
 | `docs/PERFORMANCE_REPORT.md` | 2026-09 的 ConvBench 初版结果（注意 §6.2 的口径修正） |

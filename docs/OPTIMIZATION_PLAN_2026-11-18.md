@@ -498,3 +498,15 @@ c1/c2/9 在 `Nwin=80` 时 CSA 从 IS 变 WS，并行时间反而 2 倍以上（c
 - t16 或 t32 geomean ≥ 2.5×（M4-c 已达 2.51×；原 M4 目标 ≥3.5× 未达）；
 - 至少 4 个形状 ≥ 600 GF（当前最高 386 GF，未达——见上面的瓶颈判定）；
 - 串行路径与 t1 不回退（t1 允许 ≤5% 于串行）。
+
+---
+
+## 10. 相关文档
+
+| 文档 | 作用 |
+|---|---|
+| `docs/PERFORMANCE_VS_PYTORCH.md` | 权威性能数据（附录 C 为 MLIR 单线程/多核） |
+| `docs/OPTIMIZATION_DESIGN_AND_RESULTS.md` | 设计理念、代码地图、每个优化的实现与效果 |
+| `docs/OPTIMIZATION_JOURNEY_2026-11-19.md` | 演进实录：尝试、翻车、根因与决策 |
+| `docs/FEASIBILITY_VECTORIZED_PACK_MULTICORE.md` | 多核/打包的可行性、风险与停止条件 |
+| `docs/html/index.html` | 可视化文档站（离线 HTML + SVG） |
