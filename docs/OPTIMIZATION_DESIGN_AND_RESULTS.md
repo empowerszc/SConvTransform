@@ -4,9 +4,9 @@
 > 性能数字的**权威出处**是 `docs/PERFORMANCE_VS_PYTORCH.md`（含完整 18 用例 × 6 线程档），
 > 本文负责**把设计思路、代码位置、已生效/已否决的优化及其证据串成一条线**，不重复抄表。
 >
-> 最近更新：2026-11-18（MLIR：单线程 A+C+G 追到 **geomean 1.57× vs torch t1**；
-> M3 多核正式实现落地，单 NUMA **geomean 2.36×**。文中绝对 ms 均为 2.0 GHz 重测；
-> 1.55 GHz 时代的数据只用于看相对变化，已逐处标注）
+> 最近更新：2026-11-19（MLIR：单线程 A+C+G 追到 **geomean 1.57× vs torch t1**；
+> M3 多核正式实现 **geomean 2.36×**；M4-c 多核专用 `Nwin` 再提到 **geomean 2.51×**。
+> 文中绝对 ms 均为 2.0 GHz 重测；1.55 GHz 时代的数据只用于看相对变化，已逐处标注）
 
 ---
 
@@ -14,10 +14,10 @@
 
 | 问题 | 答案 |
 |---|---|
-| 现在领先 PyTorch 吗？ | `native_impl`（参考实现）：是，18 用例 t1–t32 geomean **1.51×–1.62×**，每档 16–18/18 取胜。**MLIR/ConvBench 交付路径**：单线程 geomean 从 **0.66× 追到 1.57×**（11 个 custom 形状，10/11 ≥1.0×）；多核（M3，单 NUMA）再 **2.36×**，见 §3.9–§3.11。 |
-| 提升来自哪里？ | `native_impl`：`Bc` 并行、`(Nwin,Nf)` 自适配、SME shim 去固定开销、`Nc` 精调。MLIR 路径：快速输入打包 M1、微内核 tile 放大 M2、形状自适应 mK、**快速边界 `memrefCopy` A**、**宽 tile 下的 `Nc` 自适应 C**、**窗口 tile 160/80 G**、**M3 多核（`sconv.parallel` → OpenMP + per-thread scratch）**。 |
-| 还有大空间吗？ | `native_impl` 已贴着自己的 roofline（打包 13 GB/s/core 是带宽上限，非代码上限）。MLIR 单线程只剩 custom_7 一个落后形状（0.83×，结构性：`Ohw=400` 逼 `Nwin=80`）；最大的空间在多核——但**不是加核，而是加宽**：并行宽度只有 5–20，t16 以后就分不动了（§3.11）。 |
-| 下一步建议 | M4：把并行宽度从 5–20 提到 40–160（归约环内移 / 窗口组入链 / 多核专用 `Nwin`），目标 t16 ≥3.5×；单线程侧剩 E（打包去冗余）与 D（c7 余数 peeling）。见 `docs/OPTIMIZATION_PLAN_2026-11-18.md` §9.6。 |
+| 现在领先 PyTorch 吗？ | `native_impl`（参考实现）：是，18 用例 t1–t32 geomean **1.51×–1.62×**，每档 16–18/18 取胜。**MLIR/ConvBench 交付路径**：单线程 geomean 从 **0.66× 追到 1.57×**（11 个 custom 形状，10/11 ≥1.0×）；多核：M3 **2.36×** → M4-c **2.51×**（单 NUMA），见 §3.9–§3.12。 |
+| 提升来自哪里？ | `native_impl`：`Bc` 并行、`(Nwin,Nf)` 自适配、SME shim 去固定开销、`Nc` 精调。MLIR 路径：快速输入打包 M1、微内核 tile 放大 M2、形状自适应 mK、**快速边界 `memrefCopy` A**、**宽 tile 下的 `Nc` 自适应 C**、**窗口 tile 160/80 G**、**M3 多核（`sconv.parallel` → OpenMP + per-thread scratch）**、**M4-c 多核专用 `Nwin` + 调度不翻转约束**。 |
+| 还有大空间吗？ | `native_impl` 已贴着自己的 roofline（打包 13 GB/s/core 是带宽上限，非代码上限）。MLIR 单线程只剩 custom_7 一个落后形状（0.83×，结构性：`Ohw=400` 逼 `Nwin=80`）；多核在 M4-c 后 t16→t32 仍只涨 ≤17%，且宽度 40 不比 20 快——剩下的是串行/带宽项，不是宽度（§3.12）。 |
+| 下一步建议 | 先做串行/带宽项：E1 filter 打包提出 batch（去 3/4 冗余）、E2 输入打包分段、B 边界拷贝；M4-a/b（继续加宽）按 §3.12 的实测证据暂缓。见 `docs/OPTIMIZATION_PLAN_2026-11-18.md` §9.6。 |
 
 ---
 
@@ -448,6 +448,46 @@ t16 与 t32 持平，**加线程已经没有收益**；800 GF 验收线未达成
 （窗口组入链，宽度 ×4–16）、或按线程数下调 `Nwin`（×2–4）。完整分析、优缺点与验收见
 `OPTIMIZATION_PLAN_2026-11-18.md` §9。
 
+### 3.12 MLIR 管线：M4-c 多核专用 `Nwin`（2026-11-19）
+
+**设计理念：多核的 tile 选择必须同时看「任务数」和「CSA 调度策略」，不能只把串行 tile 减半。**
+
+M3 的并行宽度由窗口 tile 循环的 trip count 决定，而窗口组大小是 `Nwin × k3`，`k3` 又由
+CSA 按 L3 容量和 `Nwin` 反推。于是「把 `Nwin` 减半」并不保证任务数翻倍：
+
+- custom_0/8/10 等 `Ohw` 恰好一个窗口组的形状：`Nwin` 160→80 使宽度 10→20，变快 12–18%；
+- custom_2/9（`Ohw=6400`）：`Nwin=80` 时 `k3` 从 10 掉到 5，窗口组 1600→400，宽度
+  反而 10→5，t8 从 22.5 退化到 50.2 ms；
+- custom_1/2/9 还会让 CSA 从 IS 翻到 WS，这是同一组形状退化的主因；
+- custom_3/7（`Ohw=400`）：`Nwin=80` 只有 5 个任务，再减到 40 得 10 个任务，t32 从
+  138.5 降到 128.0 ms。
+
+**实现**（`lib/SConv.cpp`, `include/SConv.td`, `lib/LowerToPack.cpp`）：
+
+1. `sconv` transform op 新增可选 `multicore` unit attr；
+2. `selectAutoNwinMulticore(arch, conv, mK)`：`IC≤64` 保持串行 tile；否则取
+   `min(base,80)`；若 `Ohw/candidate < 8` 且 40 整除则取 40；
+3. **调度保护**：用 CSA 分别探测 base 与 candidate 的 `schd`，不同则保留 base。
+   这一步是 c1/c2/c9 不退化的关键；
+4. 根因修复（M4 期间发现并 TDD 覆盖）：
+   - marker 不再用 `loopOps[size-2]`，而是按「微内核祖先中 step == `nwindows` 的最外层
+     循环」选窗口循环（`Nwin` 改变时 tiling 顺序会翻转）；
+   - 只有位于 `sconv.parallel` 循环内的输入打包才给 scratch 打 `sconv.parallel_scratch`；
+     被提到循环外的打包只读共享 buffer，不能私化。
+
+**实测（2.0 GHz，node0，t1/t8/t16/t32 取最佳）**：geomean **2.51×**（M3 2.36×），
+相对 M3 的最佳时间 geomean **1.08×**；custom_4 3.52×/386 GF，custom_8 3.46×/347 GF，
+custom_1 3.14×/343 GF，custom_10 2.75×/315 GF。9 个形状提升，custom_5/9 与 M3
+同配置持平（噪声内）。完整表见 `PERFORMANCE_VS_PYTORCH.md` 附录 C.2。
+正确性 **11/11（t8、t32 各一遍）**，`test_multicore.py --stage all` 全绿
+（ir 6 / auto 11 / correct 5 / perf c0 t16 15.7 ms）。
+
+**为什么到此为止（M4-a/b 暂缓）**：M4-c 后多数形状宽度已到 20–40，但 t16→t32 仍只涨
+≤17%；手工把宽度从 20 加到 40（mc40）在 best-of 上不比 20 快（custom_0 14.5 vs 14.4，
+custom_8 58.5 vs 48.9，custom_10 27.7 vs 26.9）。这与计划 §9.6 预设的判据一致：
+「如果宽度 40 仍到不了 600 GF，问题在串行项（B/E）而不是宽度」。因此下一步优先
+E1（filter 打包去 3/4 冗余）、E2（输入打包分段）、B（边界拷贝），而不是继续加宽。
+
 ---
 
 ## 4. 被否决 / 被证伪的方向（同样是结论）
@@ -513,8 +553,8 @@ t36 稳定 1650–1760，IQR ±3–5%）。已排除 pool 原语、绑核、DVFS
 |---|---|---|
 | 算法级 tiling / packing / 微内核替换 | `lib/SConv.cpp`、`lib/LowerToBLAS.cpp` | `applyTileTo()`、`scf::tileUsingSCF`、`LowerToBLASOp::apply()` |
 | 快速输入打包（M1/M2） | `lib/LowerToPack.cpp`、`scripts/convbench/runtime/pack_input_tile.c`、`test/lowering/sconv-blas-fastp*.mlir` | `LowerToPackOp::apply`、`applyInputPacking`/`inputMultipackingOpt`（buffer 上提）、`pack_input_tile()`、`sconv.parallel_scratch` 标记 |
-| 多核（M3） | `lib/SConv.cpp`（打 `sconv.parallel`）、`lib/Parallelize.cpp`、`include/SConvPasses.h`、`sconv-opt/sconv-opt.cpp` | `applyTileTo` 末尾的 marker、`sconv-parallelize`、`sconv-erase-alloca-scope`、`-sconv-lower-parallel`、`-sconv-max-threads` |
-| 打包验收门槛 | `scripts/convbench/test_fastpack.py` | `--stage ir\|correct\|perf`；`PERF_BUDGET_MS` |
+| 多核（M3/M4） | `lib/SConv.cpp`（打 `sconv.parallel`、`selectAutoNwinMulticore`）、`lib/Parallelize.cpp`、`lib/LowerToPack.cpp`、`include/SConv.td`、`include/SConvPasses.h`、`sconv-opt/sconv-opt.cpp` | `applyTileTo` 末尾的 marker、`multicore` attr、`sconv-parallelize`、`sconv-erase-alloca-scope`、`-sconv-lower-parallel`、`-sconv-max-threads` |
+| 打包/多核验收门槛 | `scripts/convbench/test_fastpack.py`、`scripts/convbench/test_multicore.py` | `--stage ir\|correct\|perf`、`--stage ir\|auto\|correct\|perf`；`PERF_BUDGET_MS`、`AUTO_TILE` |
 | SME 路由决策 | `lib/LowerToSME.cpp` | `SMESelectOp::apply`、`min_ic`/`max_oc` 门槛 |
 | 参考实现的并行/调优 | `native_impl/src/sconv.cpp` | `build_Bc`、`run_pass`、自适应块、`SCONV_*` 环境变量 |
 | CSA 启发式 | `native_impl/src/sconv_csa.h`、`lib/CSA.cpp` | `halfHeuristic`（Nc/K2/K3） |
@@ -546,6 +586,9 @@ python3 scripts/convbench/run_convbench.py --csv scripts/convbench/samples/custo
 # MLIR 多核（M3）：一条命令产出 OpenMP 版 LLVM IR，线程数用 OMP_NUM_THREADS 控制
 build/bin/sconv-opt -transform=test/lowering/sconv-blas-fastp.mlir \
   -sconv-parallelize -sconv-lower-parallel conv.mlir -o conv.llvm.mlir
+# M4-c：多核专用 Nwin（多数形状 80 / Ohw=400 用 40 / 调度会翻转的形状保留 160）
+build/bin/sconv-opt -transform=test/lowering/sconv-blas-fastp-mc.mlir \
+  -sconv-parallelize -sconv-lower-parallel conv.mlir -o conv.mc.llvm.mlir
 OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 mlir-cpu-runner conv.llvm.mlir \
   -e main -entry-point-result=void -shared-libs=...,libomp.so
 

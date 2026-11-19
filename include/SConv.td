@@ -54,13 +54,20 @@ def SConvOp : Op<Transform_Dialect, "structured.sconv",
   // overrides the input-channel tile (0/absent = auto: wide tiles target a
   // longer K that still fits L2). Explicit values are used as given.
 
+  // The optional `multicore` unit attribute switches the automatic window tile
+  // to the multicore heuristic (a smaller tile gives the window tile loop more
+  // iterations to spread over threads; see selectAutoNwinMulticore). It does
+  // not parallelize anything by itself: the pipeline still needs
+  // `sconv-opt -sconv-parallelize`. Explicit `mK_info` values win over it.
+  //
   // The handle must implement TransformHandleTypeInterface.   
 
   let arguments = (ins
     TransformHandleTypeInterface:$target,
     OptionalAttr<ArrayAttr>:$mK_info,
     OptionalAttr<ArrayAttr>:$arch_info,
-    OptionalAttr<ArrayAttr>:$latency
+    OptionalAttr<ArrayAttr>:$latency,
+    OptionalAttr<UnitAttr>:$multicore
   );
 
   let results = (outs

@@ -196,19 +196,29 @@ static FailureOr<Operation *> lowerPackingToCall(TransformRewriter &rewriter,
     return packingOp.emitError() << "expected a static destination tile";
 
   // Tag the destination allocation so that the multicore pass
-  // (`sconv-parallelize`) can give it one slot per thread.  The destination is
-  // loop-invariant scratch that every innermost iteration fully overwrites, so
-  // it must not be shared by two concurrent iterations.
+  // (`sconv-parallelize`) can give it one slot per thread.  Only a packing
+  // that sits inside the parallel window loop is executed by several threads;
+  // when the packing is hoisted out of that loop (the window loop then only
+  // reads the tile), the buffer must stay shared and must not be tagged.
   {
-    Value scratch = dst;
-    while (Operation *definingOp = scratch.getDefiningOp()) {
-      auto viewLike = dyn_cast<ViewLikeOpInterface>(definingOp);
-      if (!viewLike)
+    bool insideParallel = false;
+    for (Operation *parent = packingOp->getParentOp(); parent;
+         parent = parent->getParentOp())
+      if (parent->hasAttr("sconv.parallel")) {
+        insideParallel = true;
         break;
-      scratch = viewLike.getViewSource();
+      }
+    if (insideParallel) {
+      Value scratch = dst;
+      while (Operation *definingOp = scratch.getDefiningOp()) {
+        auto viewLike = dyn_cast<ViewLikeOpInterface>(definingOp);
+        if (!viewLike)
+          break;
+        scratch = viewLike.getViewSource();
+      }
+      if (auto alloc = scratch.getDefiningOp<memref::AllocOp>())
+        alloc->setAttr("sconv.parallel_scratch", rewriter.getUnitAttr());
     }
-    if (auto alloc = scratch.getDefiningOp<memref::AllocOp>())
-      alloc->setAttr("sconv.parallel_scratch", rewriter.getUnitAttr());
   }
   ArrayRef<int64_t> dstShape = dstTy.getShape();
   int64_t Ni = 1, Nc, Fh, Fw, Nwin;

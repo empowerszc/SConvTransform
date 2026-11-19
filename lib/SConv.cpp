@@ -1799,12 +1799,32 @@ applyTileTo(RewriterBase &rewriter, Operation *transformOp, Operation *target, C
   //     the filter (multi)packing, which writes a scratch buffer shared by all
   //     window iterations, so they cannot join the parallel chain (see
   //     docs/OPTIMIZATION_PLAN_2026-11-18.md, section 9.4).
+  // Identify that loop by its step (the selected window tile) rather than by
+  // its position in `loopOps`: `scf::tileUsingSCF` emits the two inner loops
+  // in different orders depending on the tile sizes (the same quirk that
+  // swapInductionVars above works around), so loopOps[size-2] is the
+  // filter-subblock loop on shapes such as custom_1 with Nwin=80.  The window
+  // tile loop is the closest ancestor of the microkernel whose step equals
+  // `nwindows`; taking the first match (innermost) also avoids a coincidental
+  // filter/tile loop with the same step further out.
   // The trip count of the marked loop is 5..20 on the measured shapes; the
   // parallel width is therefore bounded by it.
-  if (loopOps.size() > 1) {
-    if (auto windowTile = dyn_cast<scf::ForOp>(loopOps[loopOps.size() - 2]))
-      windowTile->setAttr("sconv.parallel", rewriter.getUnitAttr());
+  scf::ForOp windowTile;
+  for (Operation *parent = ukernel->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    auto loop = dyn_cast<scf::ForOp>(parent);
+    if (!loop)
+      continue;
+    std::optional<int64_t> step = getConstantIntValue(loop.getStep());
+    if (step && *step == csa.mK_.nwindows) {
+      windowTile = loop;
+      break;
+    }
   }
+  if (!windowTile && loopOps.size() > 1)
+    windowTile = dyn_cast<scf::ForOp>(loopOps[loopOps.size() - 2]);
+  if (windowTile)
+    windowTile->setAttr("sconv.parallel", rewriter.getUnitAttr());
 
   // Store the results (Operation*) in the output variable (as Value)
   outResults.push_back(ukernel);
@@ -2314,6 +2334,68 @@ static int64_t selectAutoNwin(int64_t ohw) {
   return 16;
 }
 
+/// @brief Multicore variant of selectAutoNwin().
+///
+/// The parallel width of the M3/M4 pipeline is the trip count of the window
+/// tile loop, so the single-thread choice (wide tile, few GEMM calls) is not
+/// the multicore choice (small tile, many work items). Measured on 2026-11-19
+/// at 2.0 GHz, single NUMA node, best of t1..t32 (serial tile -> multicore
+/// tile, ms):
+///
+///   shape     Nwin=160   Nwin=80   Nwin=40
+///   custom_0    15.8       14.4      14.5
+///   custom_4   210.7      173.7      (does not build at 40)
+///   custom_6   147.5      131.0      (does not build at 40)
+///   custom_8    57.6       48.8      54.8
+///   custom_10   31.3       27.0      27.7
+///   custom_5    17.0       19.0      19.1   <- keep 160
+///   custom_3   138.5      138.5     127.8   <- quarter
+///   custom_1   200.8      434.8              <- keep 160
+///   custom_2    18.4       50.2              <- keep 160
+///   custom_9    51.2      180.1              <- keep 160
+///
+/// Three rules come out of it: thin-channel shapes (IC <= 64) are dominated by
+/// the input packing and the GEMM m dimension, so they keep the wide tile;
+/// when halving would leave fewer than 8 work items (Ohw=400), quarter the
+/// tile instead; and the smaller tile is rejected when it changes the CSA
+/// schedule.  The last rule is what keeps custom_1/2/9 at 160: Nwin=80 makes
+/// the cost model switch from input-stationary to weight-stationary, and the
+/// weight-stationary schedule is much slower in parallel (custom_2 t8
+/// 22.5 -> 50.2 ms) because the window group collapses with k3.
+///
+/// The schedule probe is cheap (CSA is arithmetic on the shape) and is the
+/// only reliable way to see the flip: the same generic shapes prefer IS at
+/// their serial tile, but the k3/tile_c choice depends on Nwin.
+static int64_t selectAutoNwinMulticore(const ArchInfo &arch,
+                                       const ConvInfo &conv,
+                                       const mKInfo &mk) {
+  int64_t ohw = (int64_t)conv.output_rows * conv.output_cols;
+  int64_t ic = conv.input_channels;
+  int64_t base = selectAutoNwin(ohw);
+  if (ic <= 64)
+    return base;
+  int64_t candidate = base < 80 ? base : 80;
+  if (ohw % candidate == 0 && ohw / candidate < 8) {
+    int64_t quarter = base < 40 ? base : 40;
+    if (ohw % quarter == 0)
+      candidate = quarter;
+  }
+  if (candidate >= base)
+    return base;
+
+  // Probe both tiles through the same cost model the real lowering uses.  The
+  // candidates only differ in Nwin, so copy the rest of the microkernel.
+  auto scheduleFor = [&](int64_t nwin) {
+    mKInfo probe = mk;
+    probe.nwindows = (uint8_t)nwin;
+    probe.noutput = (uint16_t)(nwin * (int64_t)probe.num_filters);
+    ArchInfo probeArch = arch;
+    ConvInfo probeConv = conv;
+    return createCSAPass(probeArch, probeConv, probe)().schd;
+  };
+  return scheduleFor(candidate) == scheduleFor(base) ? candidate : base;
+}
+
 /// @brief Choose the filter tile for a shape when `mK_info` requests it
 /// automatically (a zero `Nf`).
 ///
@@ -2378,6 +2460,7 @@ transform::SConvOp::apply(transform::TransformRewriter &rewriter,
   auto mKInfoAttr = getMKInfo();
   auto archInfoAttr = getArchInfo();
   auto latencyAttr = getLatency();
+  bool multicore = static_cast<bool>(getMulticore());
 
   // If `mKInfoAttr` was provided, use the given values
   if (mKInfoAttr) {
@@ -2555,12 +2638,16 @@ transform::SConvOp::apply(transform::TransformRewriter &rewriter,
 
     // Resolve a per-shape `mK_info` before CSA runs: zero slots mean "auto".
     // The choice is per convolution because one transform may match several
-    // convolutions with different shapes.
+    // convolutions with different shapes.  Nf is resolved first because the
+    // multicore probe needs it when it asks the CSA cost model for the
+    // schedule.
     mKInfo convMK = mK;
-    if (convMK.nwindows == 0)
-      convMK.nwindows = selectAutoNwin(oh * ow);
     if (convMK.num_filters == 0)
       convMK.num_filters = selectAutoNf(fn);
+    if (convMK.nwindows == 0)
+      convMK.nwindows = multicore
+                            ? selectAutoNwinMulticore(arch, csaConv, convMK)
+                            : selectAutoNwin(oh * ow);
     convMK.noutput = convMK.nwindows * convMK.num_filters;
 
     CSA csa = createCSAPass(arch, csaConv, convMK);

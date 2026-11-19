@@ -679,10 +679,12 @@ SME 端到端数字来自 `sme/test/shim_bench.c`（`sme/e2e.out bench <threads>
 小 GEMM 对 91 GF 的单次大 GEMM；原因与改进路径见
 `docs/OPTIMIZATION_PLAN_2026-11-18.md` §8.3。
 
-### C.2 多核（M3 正式实现，单 NUMA，OpenMP）
+### C.2 多核（M3 基线 + M4 多核专用窗口 tile，单 NUMA，OpenMP）
 
 `-sconv-parallelize -sconv-lower-parallel` 产出的 OpenMP 版本，
 `OMP_NUM_THREADS` 控制线程数，全部在 node0 内，报数止于 t32。
+
+**M3 基线**（`sconv-blas-fastp.mlir`，多核复用串行的 `Nwin`）：
 
 | 形状 | 串行 | t1 | t8 | t16 | t32 | 最佳加速比 | 最佳 GF |
 |---|--:|--:|--:|--:|--:|--:|--:|
@@ -698,9 +700,30 @@ SME 端到端数字来自 `sme/test/shim_bench.c`（`sme/e2e.out bench <threads>
 | custom_9 | 130.9 | 141.1 | 66.7 | 56.4 | **51.2** | 2.56× | 332 |
 | custom_10 | 75.0 | 80.3 | 37.9 | **31.3** | 33.1 | 2.40× | 271 |
 
-**geomean 2.36×**；t16 与 t32 持平，并行宽度只有 5–20，t≥16 已无收益。
-正确性 11/11（t8、t32 各验一遍）。设计、根因与 M4 计划见
-`docs/OPTIMIZATION_PLAN_2026-11-18.md` §9。
+**M4-c**（`sconv-blas-fastp-mc.mlir`，多核专用 `Nwin`：多数形状 80，`Ohw=400`
+用 40，`IC≤64` 与调度会翻转的 c1/c2/c9 保持 160；表内为两次全量扫描的逐格最小值）：
+
+| 形状 | 串行 | t1 | t8 | t16 | t32 | 最佳加速比 | 最佳 GF | Nwin |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| custom_0 | 31.5 | 34.1 | 16.7 | 15.8 | **14.4** | 2.19× | 295 | 80 |
+| custom_1 | 622.2 | 668.1 | 264.6 | **201.4** | 198.0 | 3.14× | 343 | 160 |
+| custom_2 | 34.9 | 40.3 | 22.0 | **18.1** | 18.4 | 1.93× | 231 | 160 |
+| custom_3 | 229.0 | 249.7 | 147.3 | 131.5 | **128.0** | 1.79× | 133 | 40 |
+| custom_4 | 618.3 | 666.4 | 242.5 | 211.3 | **175.9** | 3.52× | 386 | 80 |
+| custom_5 | 45.1 | 48.5 | 21.2 | 18.8 | **17.5** | 2.58× | 243 | 160 |
+| custom_6 | 426.5 | 458.9 | 170.4 | 151.3 | **131.6** | 3.24× | 258 | 80 |
+| custom_7 | 15.3 | 17.5 | 11.5 | 10.4 | **10.2** | 1.50× | 104 | 40 |
+| custom_8 | 169.2 | 175.8 | 65.8 | 56.7 | **48.9** | 3.46× | 347 | 80 |
+| custom_9 | 130.8 | 142.6 | 69.8 | 51.8 | **51.6** | 2.53× | 329 | 160 |
+| custom_10 | 74.0 | 80.0 | 34.0 | 31.6 | **26.9** | 2.75× | 316 | 80 |
+
+**M4 geomean 2.51×**（M3 2.36×），M4 相对 M3 的最佳时间 geomean **1.08×**；
+9 个形状提升、custom_5/9 与 M3 同配置持平（噪声）。正确性 **11/11（t8、t32 各一遍）**；
+`test_multicore.py` 的 `correct` 阶段（5/5）额外覆盖私化与共享两条 scratch 路径。
+M4 仍以 t16→t32 几乎持平收尾（≤17%），且手工把宽度从 20 加到 40 不再更快，
+说明剩下的是串行/带宽项，继续加宽（M4-a/b）收益有限——依据见
+`docs/OPTIMIZATION_PLAN_2026-11-18.md` §9.6。设计见
+`docs/OPTIMIZATION_DESIGN_AND_RESULTS.md` §3.12。
 
 ### C.3 复现
 
@@ -709,12 +732,15 @@ source env.sh
 # 单线程
 python3 scripts/convbench/run_convbench.py --csv scripts/convbench/samples/custom_conv.csv \
   --transform test/lowering/sconv-blas-fastp.mlir --num 11 --runs 5 --warmup 3
-# 多核
+# 多核（M3 基线 / M4 多核专用 tile）
 build/bin/sconv-opt -transform=test/lowering/sconv-blas-fastp.mlir \
   -sconv-parallelize -sconv-lower-parallel conv.mlir -o conv.llvm.mlir
-OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 mlir-cpu-runner conv.llvm.mlir \
+build/bin/sconv-opt -transform=test/lowering/sconv-blas-fastp-mc.mlir \
+  -sconv-parallelize -sconv-lower-parallel conv.mlir -o conv.mc.llvm.mlir
+OMP_NUM_THREADS=16 numactl --cpunodebind=0 --membind=0 mlir-cpu-runner conv.mlir \
   -e main -entry-point-result=void -shared-libs=...,libomp.so
 # 门禁
 python3 scripts/convbench/test_fastpack.py --stage all
 python3 scripts/convbench/test_mk_auto.py
+python3 scripts/convbench/test_multicore.py --stage all
 ```
